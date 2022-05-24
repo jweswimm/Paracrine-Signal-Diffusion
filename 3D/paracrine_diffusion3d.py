@@ -10,7 +10,7 @@ os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE" #needed for matplotlib for this comput
 #Turn off autograd
 torch.set_grad_enabled(False)
 
-#Reproduce
+#Reproduce function
 def seed_everything(seed: int):
     import random, os
     import numpy as np
@@ -29,7 +29,7 @@ def seed_everything(seed: int):
 
 
 def CG(A,b,grid,grid_size,max_iterations,error_tol,BC,diffusion,decay,laplacian_grid,dt):
-    
+    #Conjugate Gradient Function
     #Define padding function
     #use this after each convolution to pad the grid back with the boundary condition
     #pad=torch.nn.ConstantPad3d(1,BC)
@@ -53,6 +53,9 @@ def CG(A,b,grid,grid_size,max_iterations,error_tol,BC,diffusion,decay,laplacian_
     * grid + dt * diffusion * laplacian_grid #laplacian_grid is the stencil (3x3x3) convolved
     #with the grid (grid_size,grid_size,grid_size) 
     #to yield laplacian_grid (grid_size,grid_size,grid_size)
+    #This is a good first guess, should be close to the solution (gambling that computing the above
+    #value of x is faster than the multiple iterations required to get to a solution from pure CG solver
+    #from a random set of numbers)
     
     
     #A and x cannot be multiplied normally, we must use a convolution to slide A across x
@@ -95,11 +98,12 @@ def CG(A,b,grid,grid_size,max_iterations,error_tol,BC,diffusion,decay,laplacian_
         i=i+1
         #print(delta_new)
     if (i>18):
-        print("Done after ",i,"iterations")
+        print("Done after ",i,"iterations") #just to see if it's taking a lot of iterations
     return torch.abs(x.view(grid_size,grid_size,grid_size))
 
 
-class paracrine:
+class paracrine: #original use of this code is for neurotransmitters called paracrine factors
+    #Should maybe call this class something more intuitive for other users outside of neuroscience
     def __init__(self,nnz, grid_size, neuron_x, neuron_y, neuron_z, generation_fraction, BC):
         #nnz: number of neurons
         #grid_size: size of grid in each direction, e.g. grid_size=32 means 32x32x32
@@ -108,7 +112,7 @@ class paracrine:
         #neuron_y: y coordinates of neuron locations
         #neuron_z: z coordinates of neuron locations
         #Establish grid size
-        global grid_size_x, grid_size_y, grid_size_z
+        global grid_size_x, grid_size_y, grid_size_z #FIX THIS
         grid_size_x=grid_size
         grid_size_y=grid_size
         grid_size_z=grid_size
@@ -298,7 +302,7 @@ class paracrine:
                           [[3,14,3],[14,-128,14],[3,14,3]],\
                           [[1,3,1],[3,14,3],[1,3,1]]],device='cuda',dtype=float)
         #Initialize grid size (assuming cube grid)
-        grid_size=grid.size(2)
+        grid_size=grid.size(2) #randomly picked 2
     
     
         #Create A Matrix from Joe's Writeup
@@ -432,160 +436,4 @@ import matplotlib.pyplot as plt
 #Neurons
 for i in range (0,nnz):
     plt.plot(plot_neuron[i,:].to('cpu').numpy())
-plt.show
-
-
-
-
-
-
-#Grid 
-#for i in range (0,grid_size):
-#    for j in range (0,grid_size):
-#        for k in range (0,grid_size):
-#            plt.plot(plot_grid[i,j,k,:].to('cpu').numpy())
-#plt.show
-
-for i in range (0,2):
-    for j in range (0,2):
-        for k in range (0,2):
-            plt.plot(plot_grid[i,j,k,:].to('cpu').numpy())
-plt.show
-
-
-#Tests
-#Test interpolation to and from the grid
-
-#How many neurons do you have?
-nnz=1
-
-#What is your grid size? e.g. if 32x32x32, set grid_size=32
-#as of right now, we only consider uniform cube grids of grid_size**3 total points
-grid_size=2
-
-BC=0.003 #not used atm
-
-
-#What are the positions of the neurons? 
-neuron_x=torch.tensor(0.5,device='cuda',dtype=float)
-neuron_y=torch.tensor(0.5,device='cuda',dtype=float)
-neuron_z=torch.tensor(0.5,device='cuda',dtype=float)
-
-#Generation fraction
-generation_fraction=1.0
-
-#What is the neurotransmitter concentration on grid to start?
-#INITIAL CONDITION:
-grid=torch.ones(grid_size,grid_size,grid_size,device='cuda',dtype=float)
-
-#Initialize an instance of the class
-model=paracrine(nnz, grid_size, neuron_x, neuron_y, neuron_z,generation_fraction,BC)
-
-
-#go from grid to neuron
-neuron_concentrations=model.grid_to_neuron(grid)
-print("neuron concentration from grid:",neuron_concentrations)
-
-#go from neuron to grid
-grid=model.production_and_neuron_to_grid(neuron_concentrations,grid)
-print("Grid from neuron:",grid)
-
-neuron_concentrations=model.grid_to_neuron(grid)
-print("neuron concentration from grid:",neuron_concentrations)
-
-#go from neuron to grid
-grid=model.production_and_neuron_to_grid(neuron_concentrations,grid)
-print("Grid from neuron:",grid)
-
-neuron_concentrations=model.grid_to_neuron(grid)
-print("neuron concentration from grid:",neuron_concentrations)
-
-
-#plot_main_diag=torch.tensor([grid[0,0,0],neuron_concentrations,grid[1,1,1]])
-#plot_ynegative_diag=torch.tensor([grid[0,1,0],neuron_concentrations,grid[1,0,1]])
-#plot_znegative_diag=torch.tensor([grid[0,0,1],neuron_concentrations,grid[1,1,0]])
-#plot_xnegative_diag=torch.tensor([grid[1,0,0],neuron_concentrations,grid[0,1,1]])
-##graph interpolator
-#import matplotlib.pyplot as plt
-#plt.plot(plot_xnegative_diag.to('cpu').numpy())
-#plt.show
-
-#Test diffusion
-
-#How many neurons do you have?
-nnz=1
-
-#What is your grid size? e.g. if 32x32x32, set grid_size=32
-#as of right now, we only consider uniform cube grids of grid_size**3 total points
-grid_size=2
-
-BC=0.003 #not used atm
-
-
-
-#What is your dx and dt?
-dt=0.04
-dx=1
-
-#What is your diffusion and decay rate?
-#0.00005,0.000004
-#2e-5,3e-4,
-diffusion=0.02
-decay=0.0003
-
-#What are the positions of the neurons? 
-neuron_x=torch.tensor(0.5,device='cuda',dtype=float)
-neuron_y=torch.tensor(0.5,device='cuda',dtype=float)
-neuron_z=torch.tensor(0.5,device='cuda',dtype=float)
-
-#Generation fraction
-generation_fraction=1.0
-
-#What is the neurotransmitter concentration on grid to start?
-#INITIAL CONDITION:
-grid=torch.rand(grid_size,grid_size,grid_size,device='cuda',dtype=float)
-
-#Initialize an instance of the class
-model=paracrine(nnz, grid_size, neuron_x, neuron_y, neuron_z,generation_fraction,BC)
-
-plot_neuron=torch.empty(nnz,1000,device='cuda',dtype=float)
-plot_grid=torch.empty(grid_size,grid_size,grid_size,1000,device='cuda',dtype=float)
-
-#Start timestep loop
-for i in range(0,1000):
-    #Step the diffusion solver forward and return the concentration at gridpoints
-    grid=model.diffusion_step(grid,dx,dt,diffusion,decay)
-    plot_grid[:,:,:,i]=grid.clone()
-    
-
-    
-    print(100*i/(1000),"%")
-print(grid.size())
-
-#import matplotlib.pyplot as plt
-#Grid (just plot half the grid to save space and time)
-for i in range (0,grid_size):
-    for j in range (0,grid_size):
-        for k in range (0,grid_size):
-            plt.plot(plot_grid[i,j,k,:].to('cpu').numpy())
-plt.show
-
-
-
-
-
-
-
-
-
-
-
-
-
-    
-    
-    
-
-    
-        
-    
+plt.show(block=True)
