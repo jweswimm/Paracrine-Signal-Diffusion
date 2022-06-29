@@ -1,444 +1,490 @@
+//Author: Joe Wimmergren 2022
 #include "paracrine.cuh"
-#include <thrust/copy.h>
-#include <thrust/fill.h>
-#include <thrust/sequence.h>
+#include <iostream>
+#include <thrust/device_vector.h>
+#include <thrust/host_vector.h>
 #include <thrust/functional.h>
-#include <thrust/transform.h>
-#include <array>
+#include "cuda_runtime.h""
+#include "device_launch_parameters.h"
 
-cusparseHandle_t Csr_matrix::handle;
+//Paracrine Initialization Function
+void paracrine::initialize(){
+	std::cout << "Beginning Paracrine Initialization" << std::endl;
+	//initialize x1, x1, etc. and ones
+	for (int i = 0; i < nnz; i++) {
+		x0.push_back(0.0);
+		x1.push_back(0.0);
+		y0.push_back(0.0);
+		y1.push_back(0.0);
+		z0.push_back(0.0);
+		z1.push_back(0.0);
+		ones.push_back(1.0);
 
-//Helper function
-thrust::device_vector<Float> af_array_to_thrust_vector(const af::array& af_array) {
-    //refer to http://arrayfire.org/docs/interop_cuda.htm
-    Float* data_ptr_on_device = af_array.device<Float>();
-    const thrust::device_vector<Float> rval(data_ptr_on_device, data_ptr_on_device + af_array.elements());
-    cudaDeviceSynchronize();
-    return rval;
-}
-void Density_on_grid_3d::initialize_data() {
-    std::vector<Float> zero_vector(x_count * y_count * z_count, 0.0f);
-    gpuErrchk(cudaMalloc(&raw_data_d_ptr, x_count * y_count * z_count * sizeof(Float)));
-    gpuErrchk(cudaMemcpy(raw_data_d_ptr, zero_vector.data(), x_count * y_count * z_count * sizeof(Float), cudaMemcpyHostToDevice));
-    cudaDeviceSynchronize();
-    data = af::array(x_count, y_count, z_count, raw_data_d_ptr, afDevice);
-    data.eval();
-    af::sync();
-    data.device<Float>();
-   
-    cudaMalloc(&d_stencil, 27 * sizeof(Float));
-    cudaMalloc(&d_A, 27 * sizeof(Float));
-    cudaMalloc(&d_b, x_count * y_count * z_count * sizeof(Float));
-    cudaMalloc(&d_p, x_count * y_count * z_count * sizeof(Float));
-    cudaMalloc(&d_Ap, x_count * y_count * z_count * sizeof(Float));
-    cudaMalloc(&d_r, x_count * y_count * z_count * sizeof(Float));
-    cudaMalloc(&d_laplacian_u, x_count * y_count * z_count * sizeof(Float));
-    cudaMalloc(&d_data_next, x_count * y_count * z_count * sizeof(Float));
-    gpuErrchk(cudaDeviceSynchronize());
-    laplace_stencil = af::array(3, 3, 3, d_stencil, afDevice);
-    laplace_stencil.device<Float>();
-    const Float laplace_stencil_h[] = { 1,3,1,3,14,3,1,3,1,3,14,3,14,-128,14,3,14,3,1,3,1,3,14,3,1,3,1 };//27 point stencil known as High-Order compact FD Schemes
-                                                                  //Ref: https://www.researchgate.net/publication/2591103_High-Order_Compact_Finite_Difference_Schemes_for_Computational_Mechanics/link/00463524456e49822a000000/download page 110(125)
-    cudaMemcpy(d_stencil, laplace_stencil_h, 27 * sizeof(Float), cudaMemcpyHostToDevice);
-    laplace_stencil = laplace_stencil * (1 / (spatial_gridsize * spatial_gridsize * 30.0));
-    laplacian_u = af::array(x_count, y_count, z_count, d_laplacian_u, afDevice);
-    data_next_step = af::array(x_count, y_count, z_count, d_data_next, afDevice);
-    A = af::array(3, 3, 3, d_A, afDevice);
-    b = af::array(x_count, y_count, z_count, d_b, afDevice);
-    p = af::array(x_count, y_count, z_count, d_p, afDevice);
-    Ap = af::array(x_count, y_count, z_count, d_Ap, afDevice);
-    r = af::array(x_count, y_count, z_count, d_r, afDevice);
-    laplace_stencil.lock();
-    laplacian_u.lock();
-    data_next_step.lock();
-    A.lock();
-    b.lock();
-    p.lock();
-    Ap.lock();
-    r.lock();
-    af::sync();
-}
+	}
+
+	//determine closest gridpoints to neurons
+	//neuron_x/y/z are thrust vectors with neuron locations
+	//x0,x1,etc. are vectors with the closest gridpoints (each with size nnz)
+	for (int i = 0; i < nnz; i++) {
+		x0[i] = floor(neuron_x[i]);
+		x1[i] = ceil(neuron_x[i]);
+		y0[i] = floor(neuron_y[i]);
+		y1[i] = ceil(neuron_y[i]);
+		z0[i] = floor(neuron_z[i]);
+		z1[i] = ceil(neuron_z[i]);
+
+	}
+
+	//initialize Q to zeros so that we can use unique indices later
+	for (int i = 0; i < nnz * 8; i++)
+		Q.push_back(0.0);
+
+//	std::cout << "the 5th neuron has position=" << neuron_y[4] << " with closest gridpoints at x0=" << y0[4] << " and x1=" << y1[4] << std::endl;
 
 
-void Density_on_grid_3d::update_density(const Float timestep, const Float error_bound) {
-    //NOTE: AF_CONV_FREQ is the less optimal method for the size of input. However, since the convolve3 with 
-    //AF_CONV_SPATIAL seems broken with the current version of arrayfire, this is the workaround to take now.
-    // 1/dt(u^{n+1}-u^n)
-    gpuErrchk(cudaDeviceSynchronize());
-    af::sync();
-    //Initial guess, using explicit method:
-    laplacian_u = af::convolve3(data, laplace_stencil, af::convMode::AF_CONV_DEFAULT, af::convDomain::AF_CONV_FREQ);
-    af::sync();
-    
-    data_next_step = (1 - timestep * decay_coefficient) * data + timestep * diffusion_coefficient * laplacian_u;
-    //Eqn to solve: 
-    //D*: diffusion coeff. k: decay coeff.
-    //(1 + \Delta T k / 2) I - \Delta T D*/2 \nabla^27) u^(n+1) = u^n + \Delta T D* \nabla^27 u^n / 2 - \Delta T k u^n / 2
-    //Rewrite as Ax = b. 
-    //const Float identity_stencil_h[] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0 };
-    //const af::array identity_stencil = af::array(3, 3, 3, identity_stencil_h);
-    A = -0.5 * diffusion_coefficient * timestep * laplace_stencil;// +(1 + 0.5 * timestep * decay_coefficient) *identity_stencil;
-    A(1, 1, 1) = A(1, 1, 1) + 1 + 0.5 * timestep * decay_coefficient;
-#ifdef SOME_SANITY_CHECK_CODE
-    af::print("A", A);
-    const int test_shape_side_length = 7;
-    af::array test_array_2 = af::constant(0.0, test_shape_side_length, test_shape_side_length, test_shape_side_length, f64);
-    int entry_index = test_shape_side_length * test_shape_side_length * 4 + test_shape_side_length * 5 + 5;
-    test_array_2(entry_index) = 1.0;
-    test_array_2.eval();
-    af::print("test_array_2", test_array_2);
-    af::array concept_check_array = af::convolve3(test_array_2, A, af::convMode::AF_CONV_DEFAULT, af::convDomain::AF_CONV_FREQ);
-    concept_check_array.eval();
-    af::print("concept_check_array", concept_check_array);
+	//thrust::fill(Q.begin(), Q.end(), 100);
+//	thrust::copy(x0.begin(), x0.end(), Q.begin());
 
-    //af::print("concept check array", concept_check_array);
-    std::cout << "Sum of values: expect " << af::sum<Float>(test_array_2) * af::sum<Float>(A) << ", actual " << af::sum<Float>(concept_check_array) << std::endl;
-    af::array test_array = af::convolve3(data, A, af::convMode::AF_CONV_DEFAULT, af::convDomain::AF_CONV_FREQ);
-    af::print("An entry that should read some value", concept_check_array(entry_index));
-    auto data_shape = data.dims();
-    std::cout << "Shape of data: [" << data_shape[0] << ", " << data_shape[1] << ", " << data_shape[2] << ", " << data_shape[3] << "]\n";
-    data_shape = test_array.dims();
-    std::cout << "Shape of test_array: [" << data_shape[0] << ", " << data_shape[1] << ", " << data_shape[2] << ", " << data_shape[3] << "]\n";
-    std::cout << "Sum of values: expect " << af::sum<Float>(data) * af::sum<Float>(A) << ", actual " << af::sum<Float>(test_array);
-#endif // SOME_SANITY_CHECK_CODE
-    
-    b = (1 - spatial_gridsize * decay_coefficient / 2) * data + spatial_gridsize * diffusion_coefficient / 2 * laplacian_u;
-    const int max_iteration = 20;
-    //Solving Ax = b using conjugate gradient descent: 
-    //refer to page on wikipedia: https://en.wikipedia.org/wiki/Conjugate_gradient_method
-    af::array r(x_count, y_count, z_count, d_r, afDevice);
-    r = b - af::convolve3(data_next_step, A, af::convMode::AF_CONV_DEFAULT, af::convDomain::AF_CONV_FREQ);
-    af::array p(x_count, y_count, z_count, d_p, afDevice);
-    p = r;
-    Float r_normsquare_old = pow(af::norm(af::flat(r), af::normType::AF_NORM_VECTOR_2), 2);
-    if (r_normsquare_old < error_bound) {
-        data.eval();
-        return;
-    }
-    for (int i = 0; i < max_iteration; i++) {
-        const af::array Ap = af::convolve3(p, A, af::convMode::AF_CONV_DEFAULT, af::convDomain::AF_CONV_FREQ);//A*p
-        const Float pAp = af::sum<Float>(p*Ap);
-        const Float alpha = r_normsquare_old / pAp; // (r'*r)/(p'*A*p)
-        data_next_step = data_next_step + alpha * p;
-        r = r - alpha * Ap;
-        Float r_normsquare_new = pow(af::norm(af::flat(r), af::normType::AF_NORM_VECTOR_2), 2);
-        if (r_normsquare_new < error_bound)
-            break;
-        p = r + (r_normsquare_new / r_normsquare_old) * p;
-        r_normsquare_old = r_normsquare_new;
-    }
-    data = data_next_step;
-    data.eval();
-    af::sync();
-    data.lock();
+
+	//Now calculate distance vectors
+	thrust::host_vector<Float> del_x(nnz);
+	thrust::host_vector<Float> del_y(nnz);
+	thrust::host_vector<Float> del_z(nnz);
+
+
+	//we can create functor to apply the same operation across all of the elements of the thrust vector, but this is hard and I don't really understand it
+	//see struct del_operator in paracrine.cuh
+	//https://www.bu.edu/pasi/files/2011/07/Lecture6.pdf page 17 for an example of building custom thrust operations
+	//for now, implement naiive way with for loop
+
+	for (int i = 0; i < nnz; i++) {
+		del_x[i] = ((neuron_x[i] - x0[i]) / (x1[i] - x0[i])); 
+		del_y[i] = ((neuron_y[i] - y0[i]) / (y1[i] - y0[i]));
+		del_z[i] = ((neuron_z[i] - z0[i]) / (z1[i] - z0[i]));
+	}
+	std::cout << "del_x:" << del_x[0] << " del_y:" << del_y[0] << " del_z:" << del_z[0] << std::endl;
+
+
+	//flatten 2d thrust vectors by using https://stackoverflow.com/questions/16599501/cudamemcpy-function-usage/16616738#16616738
+	//Given a matrix A[x,y], we can convert to a long vector by 
+	//A[x,y]=B[rowsize*x+y]
+	//Then B is a long vector that has the information of matrix A
+	int rowsize = nnz;
+
+	//build distance matrix Q
+	//Q looks like [one : del_x : del_y : del_z : del_x*del_y : del_y*del_z : del_z*del_x : del_x*del_y*del_z]^T (8 x nnz)
+	//but we have to flatten it, so size of Q is actually nnz*8
+		for (int column = 0; column < nnz; column++) { 
+			//fill out Q matrix by column so we can loop through all neurons
+			//there are nnz many columns and 8 rows
+			//so Q[row, column]=Q[rowsize * row + column]
+			//here, rowsize=nnz,
+				Q[rowsize * 0 + column] = ones[column];
+				Q[rowsize * 1 + column] = del_x[column];
+				Q[rowsize * 2 + column] = del_y[column];
+				Q[rowsize * 3 + column] = del_z[column];
+				Q[rowsize * 4 + column] = del_x[column] * del_y[column];
+				Q[rowsize * 5 + column] = del_y[column] * del_z[column];
+				Q[rowsize * 6 + column] = del_z[column] * del_x[column];
+				Q[rowsize * 7 + column] = del_x[column] * del_y[column] * del_z[column];
+		}
+
+	//Now test to make sure Q is saved correctly
+//	int column = 4;
+//	for (int row = 0; row < nnz; row++)
+//		std::cout << "Row: " << row << "      Q=" << Q[rowsize * row + column] << std::endl;
+
+
+	//Initialize weighted spread to 0.0 so we can use unique indices
+	for (int i = 0; i < nnz * 8; i++)
+		weighted_spread.push_back(0.0);
+
+	//Now create weighted_spread (used in spreading)
+	//note that this is the same size as Q (8 x nnz)
+		for (int column = 0; column < nnz; column++) {//[columnsize * column + row]
+				weighted_spread[rowsize * 0 + column] = (ones[column]-del_x[column])*(ones[column]-del_y[column])*(ones[column]-del_z[column]);
+				weighted_spread[rowsize * 1 + column] = (ones[column]-del_x[column])*(ones[column]-del_y[column])*(del_z[column]);
+				weighted_spread[rowsize * 2 + column] = (ones[column]-del_x[column])*(del_y[column])*(ones[column]-del_z[column]);
+				weighted_spread[rowsize * 3 + column] = (ones[column]-del_x[column])*(del_y[column])*(del_z[column]);
+				weighted_spread[rowsize * 4 + column] = (del_x[column])*(ones[column]-del_y[column])*(ones[column]-del_z[column]);
+				weighted_spread[rowsize * 5 + column] = (del_x[column])*(ones[column]-del_y[column])*(del_z[column]);
+				weighted_spread[rowsize * 6 + column] = (del_x[column])*(del_y[column])*(ones[column]-del_z[column]);
+				weighted_spread[rowsize * 7 + column] = (del_x[column])*(del_y[column])*(del_z[column]);
+		}
+
+
+//	std::cout << "del_x:" << del_x[0] << " del_y:" << del_y[0] << " del_z:" << del_z[0] << std::endl;
+	//test weighted_spread
+//	int column = 0;
+//	for (int row = 0; row < nnz; row++)
+//		std::cout << weighted_spread[rowsize * row + column] << std::endl; 
+
+
+
+
+	//Remember that Q and weighted_spread are class members and can be used outside of this initialization function
+	//they will be used in the interpolation and spreading functions respectively
 }
 
-void Scatter_grid_converter_3d::initialize_distribute_private(const thrust::device_vector<Float> x_coordinate, const thrust::device_vector<Float> y_coordinate, const thrust::device_vector<Float> z_coordinate) {
-    std::array<thrust::device_vector<int>, 8> neuron_to_gridpoint_index;
-    std::array<thrust::device_vector<Float>, 8> neuron_to_gridpoint_weight;
-    //x direction: 
-    thrust::device_vector<int> m_vect(this->neuron_count);
-    const Float x_sidelength = (x_count - 1)  * spatial_gridsize;
-    const int x_count_copy = x_count;
-    auto find_m = [x_sidelength, x_count_copy] __host__ __device__(const Float x) {
-        const Float x_rescaled = x / x_sidelength + Float(0.5);
-        const int m = ((int)((x_count_copy - 1) * x_rescaled) + 0.5);//Note difference by 1 expected
-        return m;
-    };
-    thrust::transform(x_coordinate.begin(), x_coordinate.end(), m_vect.begin(), find_m);
-    //y direction: 
-    thrust::device_vector<int> n_vect(this->neuron_count);
-    const Float y_sidelength = (y_count - 1)  * spatial_gridsize;
-    const int y_count_copy = y_count;
-    auto find_n = [y_sidelength, y_count_copy] __host__ __device__(const Float y) {
-        const Float y_rescaled = y / y_sidelength + Float(0.5);
-        const int n = ((int)((y_count_copy - 1) * y_rescaled) + 0.5);//Note difference by 1 expected
-        return n;
-    };
-    thrust::transform(y_coordinate.begin(), y_coordinate.end(), n_vect.begin(), find_n);
-    //z direction: 
-    thrust::device_vector<int> p_vect(this->neuron_count);
-    const Float z_sidelength = (z_count - 1)  * spatial_gridsize;
-    const int z_count_copy = z_count;
-    auto find_p = [z_sidelength, z_count_copy] __host__ __device__(const Float z) {
-        const Float z_rescaled = z / z_sidelength + Float(0.5);
-        const int p = ((int)((z_count_copy - 1) * z_rescaled) + 0.5);//Note difference by 1 expected
-        return p;
-    };
-    thrust::transform(z_coordinate.begin(), z_coordinate.end(), p_vect.begin(), find_p);
-    //Set linear index number: 
-    auto mnp_tuple_begin = thrust::make_zip_iterator(thrust::make_tuple(m_vect.begin(), n_vect.begin(), p_vect.begin()));
-    auto mnp_tuple_end = thrust::make_zip_iterator(thrust::make_tuple(m_vect.end(), n_vect.end(),p_vect.end()));
-    auto set_linear_index = [x_count_copy,y_count_copy,z_count_copy] __host__ __device__(const thrust::tuple<int, int, int> mnp_tuple) {
-        //Can work without zip. However for generation to 3d case, this form is used. 
-        const int m = thrust::get<0>(mnp_tuple);
-        const int n = thrust::get<1>(mnp_tuple);
-        const int p = thrust::get<2>(mnp_tuple);
-        return m + n * x_count_copy + p * x_count_copy * y_count_copy;
-    };
-    //Note no boundary condition (of index) is required to consider, since obviously the neurons need to be inside the domain.
-    neuron_to_gridpoint_index[0] = thrust::device_vector<int>(this->neuron_count);
-    thrust::transform(mnp_tuple_begin, mnp_tuple_end, neuron_to_gridpoint_index[0].begin(), set_linear_index);
-    //Note the following 7 entries may not need to be stored as they can be inferred from the first one easily. 
-    //However since the memory usage is modest, and this function runs only once, the convenience of us later
-    //is more important. 
-    for (int i = 1; i < 8; i++) {
-        neuron_to_gridpoint_index[i] = thrust::device_vector<int>(this->neuron_count);
-    }
-    
-    thrust::transform(neuron_to_gridpoint_index[0].begin(), neuron_to_gridpoint_index[0].end(), neuron_to_gridpoint_index[1].begin(), thrust::placeholders::_1 + 1);
-    thrust::transform(neuron_to_gridpoint_index[0].begin(), neuron_to_gridpoint_index[0].end(), neuron_to_gridpoint_index[2].begin(), thrust::placeholders::_1 + x_count_copy);
-    thrust::transform(neuron_to_gridpoint_index[0].begin(), neuron_to_gridpoint_index[0].end(), neuron_to_gridpoint_index[3].begin(), thrust::placeholders::_1 + (x_count_copy + 1));
-    thrust::transform(neuron_to_gridpoint_index[0].begin(), neuron_to_gridpoint_index[0].end(), neuron_to_gridpoint_index[4].begin(), thrust::placeholders::_1 + (x_count_copy * y_count_copy));
-    thrust::transform(neuron_to_gridpoint_index[0].begin(), neuron_to_gridpoint_index[0].end(), neuron_to_gridpoint_index[5].begin(), thrust::placeholders::_1 + (x_count_copy * y_count_copy + 1));
-    thrust::transform(neuron_to_gridpoint_index[0].begin(), neuron_to_gridpoint_index[0].end(), neuron_to_gridpoint_index[6].begin(), thrust::placeholders::_1 + (x_count_copy * y_count_copy + x_count_copy));
-    thrust::transform(neuron_to_gridpoint_index[0].begin(), neuron_to_gridpoint_index[0].end(), neuron_to_gridpoint_index[7].begin(), thrust::placeholders::_1 + (x_count_copy * y_count_copy + x_count_copy + 1));
-    //Done with finding indices. Now, find weights. Using bicubic interpolation (key's kernel)
-    //KeyKernel: 1.0 -               2.5 * input ^ 2 + 1.5 * input ^ 3; (input < 1)
-    //           2.0 - 4.0 * input + 2.5 * input ^ 2 - 0.5 * input ^ 3; (input < 2)
-    //x: 
-    thrust::device_vector<Float> x_frac_vect(this->neuron_count);
-    auto find_x_frac = [x_count_copy, x_sidelength] __host__ __device__(const Float x, const int m) {
-        const Float x_rescaled = x / x_sidelength + Float(0.5);
-        const Float rval = (x_count_copy - 1) * x_rescaled - m;
-        return rval;
-    };
-    thrust::transform(x_coordinate.begin(), x_coordinate.end(), m_vect.begin(), x_frac_vect.begin(), find_x_frac);
-    //y:
-    thrust::device_vector<Float> y_frac_vect(this->neuron_count);
-    auto find_y_frac = [y_count_copy, y_sidelength] __host__ __device__(const Float y, const int n) {
-        const Float y_rescaled = y / y_sidelength + Float(0.5);
-        const Float rval = (y_count_copy - 1) * y_rescaled - n;
-        return rval;
-    };
-    thrust::transform(y_coordinate.begin(), y_coordinate.end(), n_vect.begin(), y_frac_vect.begin(), find_y_frac);
-    //z:
-    thrust::device_vector<Float> z_frac_vect(this->neuron_count);
-    auto find_z_frac = [z_count_copy, z_sidelength] __host__ __device__(const Float z, const int p) {
-        const Float z_rescaled = z / z_sidelength + Float(0.5);
-        const Float rval = (z_count_copy - 1) * z_rescaled - p;
-        return rval;
-    };
-    thrust::transform(z_coordinate.begin(), z_coordinate.end(), p_vect.begin(), z_frac_vect.begin(), find_z_frac);
-    auto bilinear_kernel = [] __host__ __device__(const Float input) {
-        return Float(1.0 - input);
-    };
-    auto bilinear_kernel_1s = [] __host__ __device__(const Float input_1s) {//1s means 1 substract
-        const Float input = 1 - input_1s;
-        return Float(1.0 - input);
-    };
-    thrust::device_vector<Float> bilinear_kernel_xfrac(this->neuron_count);
-    thrust::transform(x_frac_vect.begin(), x_frac_vect.end(), bilinear_kernel_xfrac.begin(), bilinear_kernel);
-    thrust::device_vector<Float> bilinear_kernel_yfrac(this->neuron_count);
-    thrust::transform(y_frac_vect.begin(), y_frac_vect.end(), bilinear_kernel_yfrac.begin(), bilinear_kernel);
-    thrust::device_vector<Float> bilinear_kernel_zfrac(this->neuron_count);
-    thrust::transform(z_frac_vect.begin(), z_frac_vect.end(), bilinear_kernel_zfrac.begin(), bilinear_kernel);
-    thrust::device_vector<Float> bilinear_kernel_1s_xfrac(this->neuron_count);
-    thrust::transform(x_frac_vect.begin(), x_frac_vect.end(), bilinear_kernel_1s_xfrac.begin(), bilinear_kernel_1s);
-    thrust::device_vector<Float> bilinear_kernel_1s_yfrac(this->neuron_count);
-    thrust::transform(y_frac_vect.begin(), y_frac_vect.end(), bilinear_kernel_1s_yfrac.begin(), bilinear_kernel_1s);
-    thrust::device_vector<Float> bilinear_kernel_1s_zfrac(this->neuron_count);
-    thrust::transform(z_frac_vect.begin(), z_frac_vect.end(), bilinear_kernel_1s_zfrac.begin(), bilinear_kernel_1s);
-    //A 2 step process that can use binary thrust::transform: 
-    for (int i = 0; i < 8; i++) {
-        neuron_to_gridpoint_weight[i] = thrust::device_vector<Float>(this->neuron_count);
-    }
-    //Step 1: populate with x y values.
-    thrust::transform(bilinear_kernel_xfrac.begin(), bilinear_kernel_xfrac.end(), bilinear_kernel_yfrac.begin(), neuron_to_gridpoint_weight[0].begin(), thrust::multiplies<Float>());
-    thrust::transform(bilinear_kernel_1s_xfrac.begin(), bilinear_kernel_1s_xfrac.end(), bilinear_kernel_yfrac.begin(), neuron_to_gridpoint_weight[1].begin(), thrust::multiplies<Float>());
-    thrust::transform(bilinear_kernel_xfrac.begin(), bilinear_kernel_xfrac.end(), bilinear_kernel_1s_yfrac.begin(), neuron_to_gridpoint_weight[2].begin(), thrust::multiplies<Float>());
-    thrust::transform(bilinear_kernel_1s_xfrac.begin(), bilinear_kernel_1s_xfrac.end(), bilinear_kernel_1s_yfrac.begin(), neuron_to_gridpoint_weight[3].begin(), thrust::multiplies<Float>());
-    //Step 2: Add z information.
-    for (int i = 0; i < 4; i++) {
-        thrust::transform(neuron_to_gridpoint_weight[i].begin(), neuron_to_gridpoint_weight[i].end(), bilinear_kernel_1s_zfrac.begin(), neuron_to_gridpoint_weight[i + 4].begin(), thrust::multiplies<Float>());
-    }
-    for (int i = 0; i < 4; i++) {
-        thrust::transform(neuron_to_gridpoint_weight[i].begin(), neuron_to_gridpoint_weight[i].end(), bilinear_kernel_zfrac.begin(), neuron_to_gridpoint_weight[i].begin(), thrust::multiplies<Float>());
-    }
-    //Convert to standard csr matrix:
-    grid_to_scatter_interpolation_matrix = Csr_matrix(this->neuron_count, x_count*y_count*z_count, 8 * this->neuron_count);
-    //row_entrycount: an increasing sequence 0,8, ..., 8 * this->neuron_count
-    thrust::sequence(grid_to_scatter_interpolation_matrix.row_entrycount_begin(), grid_to_scatter_interpolation_matrix.row_entrycount_end(), 0, 8);
-    //col_index and value: from a = [a1,a2,a3] b = [b1,b2,b3], c = [c1,c2,c3], ..., h to [a1,b1, ..., h1,a2,b2,c2,d2, ...]
-    //IMPORTANT: csr is sorted, need to check ai<bi<ci<di<... < hi
-    thrust::device_vector<int> index_vector(this->neuron_count);
-    thrust::sequence(index_vector.begin(), index_vector.end(), 0, 8);
-    for (int i = 0; i < 8; i++) {
-        thrust::copy(neuron_to_gridpoint_index[i].begin(), neuron_to_gridpoint_index[i].end(), thrust::make_permutation_iterator(grid_to_scatter_interpolation_matrix.col_index_begin(), index_vector.begin()));
-        thrust::copy(neuron_to_gridpoint_weight[i].begin(), neuron_to_gridpoint_weight[i].end(), thrust::make_permutation_iterator(grid_to_scatter_interpolation_matrix.value_begin(), index_vector.begin()));
-        thrust::transform(index_vector.begin(), index_vector.end(), index_vector.begin(), thrust::placeholders::_1 + 1);
-    }
-    std::cout << "Enter transpose:\n";
-    scatter_to_grid_distribution_matrix = grid_to_scatter_interpolation_matrix.get_transpose();
-    return;
+__global__ void gpu_interpolate(int nnz, int grid_size, Float* CT, Float* grid, Float* neuron_concentrations, Float* Q,
+	int* x0, int* x1, int* y0, int* y1, int* z0, int* z1)
+	//https://developer.nvidia.com/blog/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
+{ //can't be member of class paracrine?
+	//EACH NEURON GETS A THREAD
+
+	int grid_height = grid_size;
+	int grid_depth = grid_size;
+	int rowsize = 8;
+
+
+
+
+
+
+
+	for (int row = blockIdx.x * blockDim.x + threadIdx.x; row < nnz; row += gridDim.x * blockDim.x) //neuron loop
+	{
+		//Float* CT_ptr = CT_ptr + idx; //move the pointer depending on the neuron
+		//Float CT = *CT_ptr; //get values of CT
+
+		//Float* grid_ptr = grid_ptr + idx;
+		//Float grid = *grid_ptr;
+
+		//Float* x0_ptr = x0_ptr + idx;
+		//Float x0 = *x0_ptr;
+
+		//Float* x1_ptr = x1_ptr + idx;
+		//Float x1 = *x1_ptr;
+
+		//Float* y0_ptr = y0_ptr + idx;
+		//Float y0 = *y0_ptr;
+
+		//Float* y1_ptr = y1_ptr + idx;
+		//Float y1 = *y1_ptr;
+
+		//Float* z0_ptr = z0_ptr + idx;
+		//Float z0 = *z0_ptr;
+
+		//Float* z1_ptr = z1_ptr + idx;
+		//Float z1 = *z1_ptr;
+
+			//			std::cout <<"testvalue: "<< rowsize * row + column << std::endl;
+		CT[rowsize * row + 0] = grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+
+		CT[rowsize * row + 1] = grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z0[row]]  //grid[x1, y0, z0]
+			- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+
+		CT[rowsize * row + 2] = grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]]  //grid[x0, y1, z0]
+			- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+
+		CT[rowsize * row + 3] = grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z1[row]]  //grid[x0, y0, z1]
+			- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+
+		CT[rowsize * row + 4] = grid[grid_height * grid_depth * x1[row] + grid_depth * y1[row] + z0[row]] //grid[x1,y1,z0]
+			- grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]]  //grid[x0,y1,z0]
+			- grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z0[row]]  //grid[x1,y0,z0]
+			+ grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+
+		CT[rowsize * row + 5] = grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z1[row]] //grid[x0,y1,z1]
+			- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z1[row]]  //grid[x0,y0,z1]
+			- grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]]  //grid[x0,y1,z0]
+			+ grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+
+		CT[rowsize * row + 6] = grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z1[row]] //grid[x1,y0,z1]
+			- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z1[row]]  //grid[x0,y0,z1]
+			- grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z0[row]]  //grid[x1,y0,z0]
+			+ grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+
+		CT[rowsize * row + 7] = grid[grid_height * grid_depth * x1[row] + grid_depth * y1[row] + z1[row]] //grid[x1,y1,z1]
+			- grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z1[row]]  //grid[x0, y1, z1]
+			- grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z1[row]]  //grid[x1, y0, z1]
+			- grid[grid_height * grid_depth * x1[row] + grid_depth * y1[row] + z0[row]]  //grid[x1, y1, z0]
+			+ grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z0[row]]  //grid[x1, y0, z0]
+			+ grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z1[row]]  //grid[x0, y0, z1]
+			+ grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]]  //grid[x0, y1, z0]
+			- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]];  //grid[x0, y0, z0]
+		//precalculate the indices !!!!!
+
+
+		neuron_concentrations[row] = 0.0; //reset 
+		for (int j = 0; j < 8; j++) { //goes across rows of CT and columns of Q
+//			std::cout << "neuron concentration:" << std::endl;
+//			std::cout << neuron_concentrations[n]<<" += " << neuron_concentrations[n]<<" + " << CT[8 * n + j] <<" * " <<Q[nnz * j + n] << std::endl;
+			neuron_concentrations[row] = neuron_concentrations[row] + CT[8 * row + j] * Q[nnz * j + row]; //getting the diagonal elements of (C^T * Q) (matrix mult)
+//		if (threadIdx.x == 0){
+			//printf("%.6f \n",neuron_concentrations[row]);
+//		}
+		}
+
+	}
 }
 
-void Scatter_grid_converter_3d::scatter_to_grid(const thrust::device_vector<Float>& scatter, Density_on_grid_3d& grid) {
-    scatter_to_grid_distribution_matrix.dense_vector_multiplication(scatter, Ax);
-    //Use when a fast SpMSpV is available: grid_to_scatter_interpolation_matrix.sparse_vector_transpose_multiplication(scatter, Ax); 
-    //Add newly generated density to grid (of af::array): 
-    grid.data.eval();
-    af::sync();
-    thrust::device_ptr<Float> density_data_ptr = thrust::device_pointer_cast(grid.raw_data_d_ptr);
-    thrust::transform(Ax.begin(), Ax.end(), density_data_ptr, density_data_ptr, thrust::plus<Float>());
-    cudaDeviceSynchronize();
-    //grid.data.unlock();
-    return;
+
+
+thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thrust::host_vector<Float> grid) { //return pointer to array of concentrations at neuron locations
+//	thrust::host_vector<Float> neuron_concentrations(nnz);
+
+	int grid_width = grid_size; 
+	int grid_height = grid_size; 
+	int grid_depth = grid_size; 
+
+
+	int rowsize = 8;
+
+
+	//assuming grid is already flattened (was grid_size x grid_size x grid_size, now is grid_size^3 x 1)
+	//So grid[x0, y0, z0]=grid[grid_height*grid_depth*x0 + grid_depth*y0 + z0]
+
+	//Build coefficient matrix C
+	// and in the process, transpose it
+	//initialize to 0
+	thrust::host_vector<Float> CT(nnz*8,0.0);
+
+	//------------------------CPU INTERPOLATION---------------------------------------------------------------------------------------
+	//There will be c values for each element, e.g nnz many c0 values
+	//Note: this must be computed every time the interpolation takes place, as the concentration
+	//at the grid points will be changing(i.e. grid itself will be changing)
+//		for (int row = 0; row < nnz; row++) {
+////			std::cout <<"testvalue: "<< rowsize * row + column << std::endl;
+//				CT[rowsize * row + 0] = grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+//
+//				CT[rowsize * row + 1] = grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z0[row]]  //grid[x1, y0, z0]
+//					- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+//
+//				CT[rowsize * row + 2] = grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]]  //grid[x0, y1, z0]
+//					- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+//
+//				CT[rowsize * row + 3] = grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z1[row]]  //grid[x0, y0, z1]
+//					- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+//
+//				CT[rowsize * row + 4] = grid[grid_height * grid_depth * x1[row] + grid_depth * y1[row] + z0[row]] //grid[x1,y1,z0]
+//					- grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]]  //grid[x0,y1,z0]
+//					- grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z0[row]]  //grid[x1,y0,z0]
+//					+ grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+//
+//				CT[rowsize * row + 5] = grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z1[row]] //grid[x0,y1,z1]
+//					- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z1[row]]  //grid[x0,y0,z1]
+//					- grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]]  //grid[x0,y1,z0]
+//					+ grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+//
+//				CT[rowsize * row + 6] = grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z1[row]] //grid[x1,y0,z1]
+//					- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z1[row]]  //grid[x0,y0,z1]
+//					- grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z0[row]]  //grid[x1,y0,z0]
+//					+ grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
+//
+//				CT[rowsize * row + 7] = grid[grid_height * grid_depth * x1[row] + grid_depth * y1[row] + z1[row]] //grid[x1,y1,z1]
+//					- grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z1[row]]  //grid[x0, y1, z1]
+//					- grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z1[row]]  //grid[x1, y0, z1]
+//					- grid[grid_height * grid_depth * x1[row] + grid_depth * y1[row] + z0[row]]  //grid[x1, y1, z0]
+//					+ grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z0[row]]  //grid[x1, y0, z0]
+//					+ grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z1[row]]  //grid[x0, y0, z1]
+//					+ grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]]  //grid[x0, y1, z0]
+//					- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]];  //grid[x0, y0, z0]
+//			
+//
+//
+//		}
+//
+//
+//	//Now that we have CT created, we have to
+//	//neuron_concentrations=C^T * Q for each neuron (inner product for each neuron = diagonal of matrix multiplication)
+//	for (int n = 0; n < nnz; n++) {
+//		neuron_concentrations[n] = 0.0; //reset 
+//		for (int j = 0; j < 8; j++) { //goes across rows of CT and columns of Q
+////			std::cout << "neuron concentration:" << std::endl;
+////			std::cout << neuron_concentrations[n]<<" += " << neuron_concentrations[n]<<" + " << CT[8 * n + j] <<" * " <<Q[nnz * j + n] << std::endl;
+//			neuron_concentrations[n] = neuron_concentrations[n] + CT[8*n+j] * Q[nnz*j+n]; //getting the diagonal elements of (C^T * Q) (matrix mult)
+//		}
+//	}
+//-------------------------------------END OF CPU INTERPOLATION--------------------------------------------------------------------------
+
+//	std::cout << "Neuron Concentration: " <<neuron_concentrations[0] << std::endl;
+
+//-------------------------------------GPU INTERPOLATION----------------------------------------------------------------------------------
+	// get vectors on device
+	//allocate memory on device for d_CT
+	thrust::device_vector<Float> d_CT = CT;
+//	Float* d_CT;
+//	Float* CT_ptr = thrust::raw_pointer_cast(CT.data());
+//	cudaMalloc(&d_CT, 8 * nnz * sizeof(Float));
+//	cudaMemcpy(d_CT, CT_ptr, 8*nnz*sizeof(Float), cudaMemcpyHostToDevice);
+
+
+	thrust::device_vector<Float> d_grid = grid;
+//	Float* d_grid;
+//	Float* grid_ptr = thrust::raw_pointer_cast(grid.data());
+//	cudaMalloc(&d_grid, 8 * nnz * sizeof(Float));
+//	cudaMemcpy(d_grid, grid_ptr, 8*nnz*sizeof(Float), cudaMemcpyHostToDevice);
+
+	thrust::device_vector<Float> d_neuron_concentrations(nnz);
+	//Float* d_neuron_concentrations;
+	//Float* neuron_concentrations_ptr = thrust::raw_pointer_cast(neuron_concentrations.data());
+	//cudaMalloc(&d_neuron_concentrations, 8 * nnz * sizeof(Float));
+	//cudaMemcpy(d_neuron_concentrations, neuron_concentrations_ptr, 8*nnz*sizeof(Float), cudaMemcpyHostToDevice);
+
+	thrust::device_vector<Float> d_Q = Q;
+	//Float* d_Q;
+	//Float* Q_ptr = thrust::raw_pointer_cast(Q.data());
+	//cudaMalloc(&d_Q, 8 * nnz * sizeof(Float));
+	//cudaMemcpy(d_Q, Q_ptr, 8*nnz*sizeof(Float), cudaMemcpyHostToDevice);
+
+	//Calculate blocksize and gridsize
+	int block_size = 1024; //schedule a block full of number of neurons
+	int cuda_grid_size = nnz / block_size + 1;
+
+
+	//create double pointer to send into gpu_interpolate (i.e. by reference in the kernel)
+
+
+	gpu_interpolate <<< cuda_grid_size, block_size >>> (nnz, grid_size, thrust::raw_pointer_cast(d_CT.data()), thrust::raw_pointer_cast(d_grid.data()),
+		thrust::raw_pointer_cast(d_neuron_concentrations.data()), thrust::raw_pointer_cast(d_Q.data()), thrust::raw_pointer_cast(x0.data()), 
+		thrust::raw_pointer_cast(x1.data()), thrust::raw_pointer_cast(y0.data()), thrust::raw_pointer_cast(y1.data()),
+		thrust::raw_pointer_cast(z0.data()), thrust::raw_pointer_cast(z1.data()));
+	gpuErrchk(cudaPeekAtLastError());
+	gpuErrchk(cudaDeviceSynchronize());
+//	std::cout << d_neuron_concentrations[0] << "TESTING" << std::endl;
+
+	return d_neuron_concentrations;
 }
-void Scatter_grid_converter_3d::interpolate_at_location(thrust::device_vector<Float>& scatter, const Density_on_grid_3d& grid) {
-    grid.data.eval();
-    af::sync();
-    const Float* data_ptr_on_device = grid.raw_data_d_ptr;
-    Float* scatter_ptr = thrust::raw_pointer_cast(scatter.data());
-    grid_to_scatter_interpolation_matrix.dense_vector_multiplication(data_ptr_on_device, scatter_ptr);
-    gpuErrchk(cudaDeviceSynchronize());
-    //grid.data.unlock();
+
+
+
+
+	
+
+__global__ void gpu_spread(int nnz, int grid_size, Float* grid, Float* P, 
+	int* x0, int* x1, int* y0, int* y1, int* z0, int* z1){
+
+	int grid_height = grid_size;
+	int grid_depth = grid_size;
+
+	for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < nnz; i += gridDim.x * blockDim.x){ //neuron loop
+		grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z0[i]] += P[nnz * 0 + i];
+		grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z1[i]] += P[nnz * 1 + i];
+		grid[grid_height * grid_depth * x0[i] + grid_depth * y1[i] + z0[i]] += P[nnz * 2 + i];
+		grid[grid_height * grid_depth * x0[i] + grid_depth * y1[i] + z1[i]] += P[nnz * 3 + i];
+		grid[grid_height * grid_depth * x1[i] + grid_depth * y0[i] + z0[i]] += P[nnz * 4 + i];
+		grid[grid_height * grid_depth * x1[i] + grid_depth * y0[i] + z1[i]] += P[nnz * 5 + i];
+		grid[grid_height * grid_depth * x1[i] + grid_depth * y1[i] + z0[i]] += P[nnz * 6 + i];
+		grid[grid_height * grid_depth * x1[i] + grid_depth * y1[i] + z1[i]] += P[nnz * 7 + i];
+	}
 }
 
-void Csr_matrix::dense_vector_multiplication(const thrust::device_vector<Float> x, thrust::device_vector<Float>& Ax)
-{
-    dense_vector_multiplication(thrust::raw_pointer_cast(x.data()), thrust::raw_pointer_cast(Ax.data()));
+
+
+
+//spread function
+thrust::device_vector<Float> paracrine::spread(thrust::device_vector<Float> grid,thrust::device_vector<Float> neuron_concentrations ) {
+	std::cout << "Spreading Started" << std::endl;
+	
+	//calculate neurotransmitter generation (thrust vector of size nnz)
+	Float generation_constant = 1; //for now just have as a constant
+
+
+
+	//---------------------------CPU SPREADING--------------------------------------------------------------------------------------
+	//int grid_width = grid_size;
+	//int grid_height = grid_size;
+	//int grid_depth = grid_size;
+
+	////	using namespace thrust::placeholders;
+	//thrust::host_vector <Float> generation(nnz*8, generation_constant);
+	////thrust::transform(neuron_concentrations.begin(), neuron_concentrations.end(), generation.begin(), generation_constant * _1); //_1 is a placeholder
+
+	//thrust::host_vector <Float> P(nnz*8,0.0);
+
+
+	//thrust::transform(generation.begin(), generation.end(), weighted_spread.begin(), P.begin(), thrust::multiplies<Float>()); //P=generation * weighted_spread element by element
+
+	//for (int i=0; i<nnz; i++){ //weighted_spread[rowsize * 0 + column]
+	//	grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z0[i]] += P[nnz*0 + i];
+	//	grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z1[i]] += P[nnz*1 + i];
+	//	grid[grid_height * grid_depth * x0[i] + grid_depth * y1[i] + z0[i]] += P[nnz*2 + i];
+	//	grid[grid_height * grid_depth * x0[i] + grid_depth * y1[i] + z1[i]] += P[nnz*3 + i];
+	//	grid[grid_height * grid_depth * x1[i] + grid_depth * y0[i] + z0[i]] += P[nnz*4 + i];
+	//	grid[grid_height * grid_depth * x1[i] + grid_depth * y0[i] + z1[i]] += P[nnz*5 + i];
+	//	grid[grid_height * grid_depth * x1[i] + grid_depth * y1[i] + z0[i]] += P[nnz*6 + i];
+	//	grid[grid_height * grid_depth * x1[i] + grid_depth * y1[i] + z1[i]] += P[nnz*7 + i];
+	//}
+	//----------------------------END CPU SPREADING----------------------------------------------------------------------------------
+
+
+
+
+	//-----------------------------GPU SPREADING--------------------------------------------------------------------------------------
+
+	//Send weighted_spread (found in initialization) to gpu
+	thrust::device_vector<Float> d_weighted_spread = weighted_spread;
+
+	//Create thrust vector P
+	thrust::device_vector<Float> d_P(nnz*8);
+
+	//Create generation vector
+	thrust::device_vector <Float> d_generation(nnz*8, generation_constant);
+
+
+	//Create P vector (done on GPU still with thrust library)
+	thrust::transform(d_generation.begin(), d_generation.end(), d_weighted_spread.begin(), d_P.begin(), thrust::multiplies<Float>()); //P=generation * weighted_spread element by element
+	
+	//Calculate blocksize and gridsize
+	int block_size = 1024; //schedule a block full of number of neurons
+	int cuda_grid_size = nnz / block_size + 1;
+
+	gpu_spread <<< cuda_grid_size, block_size >>> (nnz, grid_size, thrust::raw_pointer_cast(grid.data()),
+		thrust::raw_pointer_cast(d_P.data()), thrust::raw_pointer_cast(x0.data()), 
+		thrust::raw_pointer_cast(x1.data()), thrust::raw_pointer_cast(y0.data()), thrust::raw_pointer_cast(y1.data()),
+		thrust::raw_pointer_cast(z0.data()), thrust::raw_pointer_cast(z1.data()));
+	gpuErrchk(cudaPeekAtLastError());
+	gpuErrchk(cudaDeviceSynchronize());
+
+
+	return grid;
 }
 
-void Csr_matrix::dense_vector_multiplication(const Float* x_ptr, Float* Ax_ptr) {
-    const Float alpha = 1.0;
-    const Float beta = 0.0;
-    int* row_entrycount_ptr = thrust::raw_pointer_cast(d_row_entrycount.data());
-    int* col_index_ptr = thrust::raw_pointer_cast(d_col_index.data());
-    Float* value_ptr = thrust::raw_pointer_cast(d_value.data());
 
-    auto type = (sizeof(Float) < sizeof(double)) ? CUDA_R_32F : CUDA_R_64F;
+//3d Convolution kernel
+__global__ void gpu_convolve(Float* image, Float* mask, float* result, int image_size, int mask_size ) {
 
-    cusparseSpMatDescr_t mat_desc;
-    cusparseErrchk(cusparseCreateCsr(&mat_desc, row_count, col_count, nnz,
-        (void*)thrust::raw_pointer_cast(d_row_entrycount.data()),
-        (void*)thrust::raw_pointer_cast(d_col_index.data()),
-        (void*)thrust::raw_pointer_cast(d_value.data()),
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_32I,
-        CUSPARSE_INDEX_BASE_ZERO,
-        type
-    ));
-    gpuErrchk(cudaDeviceSynchronize());
-    cusparseDnVecDescr_t x_vec, Ax_vec;
-    cusparseErrchk(cusparseCreateDnVec(&x_vec, col_count, (void*)x_ptr, CUDA_R_32F));
-    cusparseErrchk(cusparseCreateDnVec(&Ax_vec, row_count, (void*)Ax_ptr, CUDA_R_32F));
-    gpuErrchk(cudaDeviceSynchronize());
-    size_t* buffer_size = new size_t;
-    Float* d_mv_buffer;
-    cusparseErrchk(cusparseSpMV_bufferSize(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, mat_desc, x_vec, &beta, Ax_vec, type, CUSPARSE_CSRMV_ALG1, buffer_size));
-    gpuErrchk(cudaDeviceSynchronize());
-    cudaMalloc(&d_mv_buffer, *buffer_size);
-    //std::wcout << "BUF SIZE " << *buffer_size << std::endl;
-    delete buffer_size;
-    cusparseErrchk(cusparseSpMV(handle, CUSPARSE_OPERATION_NON_TRANSPOSE, &alpha, mat_desc, x_vec, &beta, Ax_vec, type, CUSPARSE_CSRMV_ALG1, d_mv_buffer));
-    gpuErrchk(cudaDeviceSynchronize());
-    cudaFree(d_mv_buffer);
 }
 
-void Csr_matrix::sparse_vector_transpose_multiplication(const thrust::device_vector<Float> x, thrust::device_vector<Float>& Ax) {
-    thrust::device_vector<int> x_nonzero_index(row_count);
-    thrust::device_vector<int> index_vector(row_count);
-    thrust::sequence(index_vector.begin(), index_vector.end());
-    //thrust::counting_iterator<int> index_vector(row_count);
-    
-    auto is_nonzero = [] __host__ __device__(const Float input) { return input!=0.0; };
-    auto x_nonzero_index_end = thrust::copy_if(index_vector.begin(), index_vector.end(), x.begin(), x_nonzero_index.begin(), is_nonzero);
-    const int nonzero_count = x_nonzero_index_end - x_nonzero_index.begin();
-    thrust::fill(Ax.begin(), Ax.end(), 0.0);
-    if (nonzero_count == 0) {
-        return;
-    }
-    //A primitive method: iterate through columns:
-    for (auto itr = x_nonzero_index.begin(); itr < x_nonzero_index_end; itr++) {
-        const Float alpha = 1.0;
 
-        auto add_alpha = [alpha] __host__ __device__(const Float input, const Float multiplier) { return input + alpha * multiplier; };
-        thrust::transform(thrust::make_permutation_iterator(Ax.begin(), d_col_index.begin() + d_row_entrycount[*itr]),
-            thrust::make_permutation_iterator(Ax.begin(), d_col_index.begin() + d_row_entrycount[(*itr) + 1]),
-            d_value.begin() + d_row_entrycount[*itr],
-            thrust::make_permutation_iterator(Ax.begin(), d_col_index.begin() + d_row_entrycount[*itr]),
-            add_alpha);
-    }
-    return;
-}
 
-void Csr_matrix::sparse_vector_transpose_multiplication(const thrust::device_vector<bool> x, thrust::device_vector<Float>& Ax) {
-    thrust::device_vector<int> x_nonzero_index(row_count);
-    thrust::device_vector<int> index_vector(row_count);
-    thrust::sequence(index_vector.begin(), index_vector.end());
-    //thrust::counting_iterator<int> index_vector(row_count);
 
-    auto is_nonzero = [] __host__ __device__(const bool input) { return input; };
-    auto x_nonzero_index_end = thrust::copy_if(index_vector.begin(), index_vector.end(), x.begin(), x_nonzero_index.begin(), is_nonzero);
-    const int nonzero_count = x_nonzero_index_end - x_nonzero_index.begin();
-    thrust::fill(Ax.begin(), Ax.end(), 0.0);
-    if (nonzero_count == 0) {
-        return;
-    }
-    //A primitive method: iterate through columns:
-    for (auto itr = x_nonzero_index.begin(); itr < x_nonzero_index_end; itr++) {
-        const Float alpha = 1.0;
-        
-        auto add_alpha = [alpha] __host__ __device__(const Float input, const Float multiplier) { return input + alpha * multiplier; };
-        thrust::transform(thrust::make_permutation_iterator(Ax.begin(), d_col_index.begin() + d_row_entrycount[*itr]),
-            thrust::make_permutation_iterator(Ax.begin(), d_col_index.begin() + d_row_entrycount[(*itr) + 1]),
-            d_value.begin() + d_row_entrycount[*itr],
-            thrust::make_permutation_iterator(Ax.begin(), d_col_index.begin() + d_row_entrycount[*itr]),
-            add_alpha);
-    }
-    return;
-}
 
-void Csr_matrix::transpose() {
-    Csr_matrix AT = get_transpose();
-    row_count = AT.row_count;
-    col_count = AT.col_count;
-    d_col_index = AT.d_col_index;
-    d_row_entrycount = AT.d_row_entrycount;
-    d_value = AT.d_value;
-    return;
-}
 
-void Csr_matrix::get_transpose(Csr_matrix& AT) const {
-    cudaDataType cuda_data_type;
-    if (sizeof(Float) == sizeof(double)) {
-        cuda_data_type = CUDA_R_64F;
-    }
-    else if (sizeof(Float) == sizeof(float)) {
-        cuda_data_type = CUDA_R_32F;
-    }
-    const int* i_row_entrycount_ptr = thrust::raw_pointer_cast(d_row_entrycount.data());
-    const int* i_col_index_ptr = thrust::raw_pointer_cast(d_col_index.data());
-    const void* i_value_ptr = thrust::raw_pointer_cast(d_value.data());
-    int* o_row_entrycount_ptr = thrust::raw_pointer_cast(AT.d_row_entrycount.data());
-    int* o_col_index_ptr = thrust::raw_pointer_cast(AT.d_col_index.data());
-    void* o_value_ptr = thrust::raw_pointer_cast(AT.d_value.data());
-    size_t* buffer_size = new size_t;
-    //First: find buffer required.
-    cusparseCsr2cscEx2_bufferSize(handle, row_count, col_count, nnz, i_value_ptr, i_row_entrycount_ptr, i_col_index_ptr,
-        o_value_ptr, o_row_entrycount_ptr, o_col_index_ptr, cuda_data_type, CUSPARSE_ACTION_NUMERIC, CUSPARSE_INDEX_BASE_ZERO, CUSPARSE_CSR2CSC_ALG2, buffer_size);
-    //Then: allocate buffer
-    void* buffer_ptr;
-    cudaGetErrorString(cudaMalloc(&buffer_ptr, sizeof(double) * *buffer_size));
-    std::cout << "Required buffer size: " << *buffer_size << std::endl;
-    delete buffer_size;
-    //Perform transpose:
-    cusparseCsr2cscEx2(handle, row_count, col_count, nnz, i_value_ptr, i_row_entrycount_ptr, i_col_index_ptr,
-        o_value_ptr, o_row_entrycount_ptr, o_col_index_ptr, cuda_data_type, CUSPARSE_ACTION_NUMERIC, CUSPARSE_INDEX_BASE_ZERO, CUSPARSE_CSR2CSC_ALG2, buffer_ptr);
-    //Finally, free buffer:
-    cudaFree(buffer_ptr);
-    std::cout << "transpose done.\n";
-    return;
-}
-Csr_matrix Csr_matrix::get_transpose() const {
-    Csr_matrix rval;
-    rval.row_count = col_count;
-    rval.col_count = row_count;
-    rval.nnz = nnz;
-    rval.d_row_entrycount = thrust::device_vector<int>(rval.row_count + 1);
-    rval.d_col_index = thrust::device_vector<int>(rval.nnz);
-    rval.d_value = thrust::device_vector<Float>(rval.nnz);
-    get_transpose(rval);
-    return rval;
+thrust::device_vector < Float> paracrine::convolve(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask) {
+	std::cout << "Convolution started" << std::endl;
+
+	//Mask is 3x3x3 (in our case, 27-point discrete laplacian stencil)
+	//Mask dimensions are initialized in paracrine class
+
+
+	//Pad the image with 0's so that we retain the same size after convolution
+	int image_size = grid_size + 2;
+	//initialize as 0's first
+	thrust::device_vector<Float> image(image_size * image_size * image_size, 0.0); //same as grid but with 0's on boundaries in 3d
+
+	//Copy values over from grid to center of image
+	for (int i = 1; i < grid_size+1; i++) {
+		for (int j = 1; j < grid_size+1; j++) {
+			for (int k = 1; k < grid_size+1; k++) { //i,j,k are between 0 and grid_size for grid
+				image[image_size * image_size * i + image_size * j + k] = grid[grid_size * grid_size * (i-1) + grid_size * (j-1) + (k-1)] ;
+			}
+		}
+	}
+
+	//We now have image. Image is just grid (from argument to this function) with 0s on the boundaries.
+	//Now when we convolve, we won't lose any dimensions (our mask is 3x3x3 so we only needed 1 extra space in each dimension)
+	
+	//Call gpu_convolve function to do 3d convolution with mask and image
+
+
+
+
+	//Create new 3d thrust vector that will eventually be output
+	thrust::device_vector<Float> result(grid_size * grid_size * grid_size);
+
+	
+//	return result; //actual return
+	return image;
 }
