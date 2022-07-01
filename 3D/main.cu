@@ -10,7 +10,7 @@ int main() {
 	//convert 
 	//create thrust host_vector
 	const int nnz = 1024;
-	const int grid_size = 3; //grid(grid_size, grid_size, grid_size), assuming cube uniform grid
+	const int grid_size = 32; //grid(grid_size, grid_size, grid_size), assuming cube uniform grid
 	thrust::host_vector<Float> neuron_locations_x(nnz+1);
 	thrust::host_vector<Float> neuron_locations_y(nnz+1);
 	thrust::host_vector<Float> neuron_locations_z(nnz+1);
@@ -82,7 +82,7 @@ int main() {
 
 
 
-	std::cout << "Spreading Test:" << std::endl;
+	std::cout << "Spreading Test:" << std::endl;;
 	thrust::device_vector<Float> grid(grid_size * grid_size * grid_size+1);
 	grid = ptest.spread(grid_IC, d_neuron_conc);
 	std::cout << grid[0] << std::endl;
@@ -143,9 +143,9 @@ int main() {
 
 
 	//test convolve
-	thrust::device_vector<Float> image((grid_size + 1) * (grid_size + 1) * (grid_size + 1));
 	std::cout << "Convolve tester: "<<grid[0] << std::endl;
-	image = ptest.convolve(grid, stencil);
+	grid = ptest.convolve(grid, stencil);
+	std::cout << "New  grid value: " << grid[grid_size * grid_size * 20 + grid_size * 20 + 20] << std::endl;
 
 	//Test the padding
 	//std::cout << "Image has values: " << std::endl;
