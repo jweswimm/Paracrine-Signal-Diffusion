@@ -1,5 +1,6 @@
 //Header File for Paracrine Signalling in the Mouse SCN
 //Author: Joe Wimmergren 2022
+//Header File for Paracrine Part of SCN
 #pragma once
 #include <iostream>
 #include <thrust/host_vector.h>
@@ -80,6 +81,7 @@ class paracrine {
 
 
 };
+
 
 
 
