@@ -443,7 +443,45 @@ thrust::device_vector<Float> paracrine::spread(thrust::device_vector<Float> grid
 
 
 //3d Convolution kernel
-__global__ void gpu_convolve(Float* image, Float* mask, float* result, int image_size, int mask_size ) {
+__global__ void gpu_convolve(Float* image, Float* mask, Float* result, int image_size, int mask_size, int grid_size ) {
+
+	//image is size ((grid_size+2) x (grid_size+2) x (grid_size+2))
+	//mask is size (3x3x3)
+	//result will be (grid_size x grid_size x grid_size) thanks to the zero padding we did earlier
+
+
+	//remember the flattening scheme
+	//grid[grid_height * grid_depth * x + grid_depth * y + z] = grid[x,y,z]
+
+	//Use the 3d architecture of the GPU to our advantage
+	//nested loops to give result(i,j,k)
+	for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < grid_size; i += gridDim.x * blockDim.x) {
+		for (int j = blockIdx.y * blockDim.y + threadIdx.y; j < grid_size; j += gridDim.y * blockDim.y) {
+			for (int k = blockIdx.z * blockDim.z + threadIdx.z; k < grid_size; k += gridDim.z * blockDim.z) {
+
+
+				//Start convolution loops
+				Float sum = 0.0;
+				for (int ii = 0; ii < mask_size; ii++) {
+					for (int jj = 0; jj < mask_size; jj++) {
+						for (int kk = 0; kk < mask_size; kk++) {
+							sum += (image[image_size * image_size * (i+ii) + image_size * (j+jj) + (k+kk)])
+								    * (mask[mask_size * mask_size * ii + mask_size*jj + kk]);
+						}
+					}
+				}
+
+				result[grid_size * grid_size * i + grid_size * j + k] = sum;
+
+			}
+		}
+	}
+
+
+
+
+	
+	
 
 }
 
@@ -454,6 +492,9 @@ __global__ void gpu_convolve(Float* image, Float* mask, float* result, int image
 
 thrust::device_vector < Float> paracrine::convolve(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask) {
 	std::cout << "Convolution started" << std::endl;
+
+
+	int mask_size = 3;
 
 	//Mask is 3x3x3 (in our case, 27-point discrete laplacian stencil)
 	//Mask dimensions are initialized in paracrine class
@@ -476,7 +517,7 @@ thrust::device_vector < Float> paracrine::convolve(thrust::device_vector<Float> 
 	//We now have image. Image is just grid (from argument to this function) with 0s on the boundaries.
 	//Now when we convolve, we won't lose any dimensions (our mask is 3x3x3 so we only needed 1 extra space in each dimension)
 	
-	//Call gpu_convolve function to do 3d convolution with mask and image
+
 
 
 
@@ -484,7 +525,26 @@ thrust::device_vector < Float> paracrine::convolve(thrust::device_vector<Float> 
 	//Create new 3d thrust vector that will eventually be output
 	thrust::device_vector<Float> result(grid_size * grid_size * grid_size);
 
+
+	//Call gpu_convolve function to do 3d convolution with mask and image
 	
-//	return result; //actual return
-	return image;
+	//We want a thread for each element in result i.e. grid_size x grid_size x grid_size number of threads
+
+	int threadsPerBlock = 8; //CANT HAVE MORE THAN 1024 THREADS PER BLOCK
+	//allow for dynamically sized grid
+	int gridWidth = ceil(Float(grid_size) / Float(threadsPerBlock));
+	int gridHeight = ceil(Float(grid_size) / Float(threadsPerBlock));
+	int gridDepth = ceil(Float(grid_size) / Float(threadsPerBlock));
+
+	dim3 gridDim(gridWidth, gridHeight, gridDepth);
+	dim3 blockDim(threadsPerBlock, threadsPerBlock, threadsPerBlock);
+
+		gpu_convolve << < gridDim, blockDim >> > (thrust::raw_pointer_cast(image.data()), thrust::raw_pointer_cast(mask.data()),
+												  thrust::raw_pointer_cast(result.data()), image_size, mask_size, grid_size);
+		gpuErrchk(cudaPeekAtLastError());
+		gpuErrchk(cudaDeviceSynchronize());
+
+	
+	return result; //actual return
+//	return image;
 }
