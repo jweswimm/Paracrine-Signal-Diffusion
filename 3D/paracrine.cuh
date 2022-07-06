@@ -1,6 +1,4 @@
-//Header File for Paracrine Signalling in the Mouse SCN
 //Author: Joe Wimmergren 2022
-//Header File for Paracrine Part of SCN
 #pragma once
 #include <iostream>
 #include <thrust/host_vector.h>
@@ -59,10 +57,20 @@ class paracrine {
 		thrust::device_vector<int> z0;
 		thrust::device_vector<int> z1;
 
+
+		//Diffusion Variables
+		thrust::device_vector<Float> stencil;
 		//Initialize mask dimensions for the 3d convolution
 		int mask_depth = 3;
 		int mask_height = 3;
 		int mask_width = 3;
+
+		thrust::device_vector<Float> eye;
+		thrust::device_vector<Float> A;
+		thrust::device_vector<Float> B;
+		thrust::device_vector<Float> b;
+		thrust::device_vector<Float> laplacian_grid;
+
 
 
 		//Paracrine Constructor
@@ -77,11 +85,10 @@ class paracrine {
 		void initialize();
 		thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thrust::host_vector<Float> grid);
 		thrust::device_vector<Float> paracrine::spread(thrust::device_vector<Float> grid, thrust::device_vector<Float> neuron_concentrations);
-		thrust::device_vector<Float> paracrine::convolve(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask);
-
+		thrust::device_vector<Float> paracrine::mask_mult(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask);
+		thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid);
 
 };
-
 
 
 
