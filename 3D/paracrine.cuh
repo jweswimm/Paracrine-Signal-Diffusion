@@ -35,6 +35,8 @@ class paracrine {
 	public:
 		const int grid_size; //size of 1 dimension of the grid (assuming cube grid)
 		const int nnz; //number of neurons
+		const Float dx;
+		const Float dt;
 		thrust::host_vector<Float> neuron_x; //locations of neurons in x direction
 		thrust::host_vector<Float> neuron_y; //locations of neurons in y direction
 		thrust::host_vector<Float> neuron_z; //locations of neurons in z direction
@@ -71,12 +73,15 @@ class paracrine {
 		thrust::device_vector<Float> b;
 		thrust::device_vector<Float> laplacian_grid;
 
+		const Float diffusion;
+		const Float decay;
+
 
 
 		//Paracrine Constructor
-		paracrine(const int grid_size, const int nnz, const thrust::host_vector<Float> neuron_x, const thrust::host_vector<Float> neuron_y, \
+		paracrine(const int grid_size, const int nnz, const Float dx, const Float dt, const Float diffusion, const Float decay, const thrust::host_vector<Float> neuron_x, const thrust::host_vector<Float> neuron_y, \
 				  const thrust::host_vector<Float> neuron_z, const thrust::host_vector<Float> grid_IC, const thrust::host_vector<Float> neuron_IC)\
-			      : grid_size(grid_size), nnz(nnz), neuron_x(neuron_x), neuron_y(neuron_y), neuron_z(neuron_z), grid_IC(grid_IC), neuron_IC(neuron_IC)
+			      : grid_size(grid_size), nnz(nnz), dx(dx), dt(dt), diffusion(diffusion), decay(decay), neuron_x(neuron_x), neuron_y(neuron_y), neuron_z(neuron_z), grid_IC(grid_IC), neuron_IC(neuron_IC)
 		{//gather parameters by this constructor
 			std::cout << "Paracrine Parameters Saved" << std::endl;
 		};
@@ -86,7 +91,9 @@ class paracrine {
 		thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thrust::host_vector<Float> grid);
 		thrust::device_vector<Float> paracrine::spread(thrust::device_vector<Float> grid, thrust::device_vector<Float> neuron_concentrations);
 		thrust::device_vector<Float> paracrine::mask_mult(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask);
-		thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid);
+		thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid, Float dx, Float dt, Float diffusion, Float decay);
+		Float paracrine::inner_product(thrust::device_vector<Float> A, thrust::device_vector<Float> B);
+		thrust::device_vector<Float> paracrine::CG(thrust::device_vector<Float> A, thrust::device_vector<Float> b,thrust::device_vector<Float> grid, thrust::device_vector<Float> laplacian_grid, int max_iterations, Float error_tol);
 
 };
 
