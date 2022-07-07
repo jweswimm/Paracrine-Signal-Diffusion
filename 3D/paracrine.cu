@@ -4,8 +4,12 @@
 #include <thrust/device_vector.h>
 #include <thrust/host_vector.h>
 #include <thrust/functional.h>
-#include "cuda_runtime.h""
+#include <thrust/inner_product.h>
+#include <thrust/transform.h>
+#include "cuda_runtime.h"
 #include "device_launch_parameters.h"
+
+using namespace thrust::placeholders;
 
 //Paracrine Initialization Function
 void paracrine::initialize(){
@@ -500,7 +504,7 @@ thrust::device_vector<Float> paracrine::spread(thrust::device_vector<Float> grid
 
 
 	//Create P vector (done on GPU still with thrust library)
-	thrust::transform(d_generation.begin(), d_generation.end(), d_weighted_spread.begin(), d_P.begin(), thrust::multiplies<Float>()); //P=generation * weighted_spread element by element
+	thrust::transform(d_generation.begin(), d_generation.end(), d_weighted_spread.begin(), d_P.begin(), thrust::multiplies<float>()); //P=generation * weighted_spread element by element
 	
 	//Calculate blocksize and gridsize
 	int block_size = 1024; //schedule a block full of threads
@@ -567,7 +571,6 @@ __global__ void gpu_mask_mult(Float* image, Float* stencil, Float* result, int i
 
 
 thrust::device_vector < Float> paracrine::mask_mult(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask) {
-	std::cout << "Convolution started" << std::endl;
 
 
 	int mask_size = 3;
@@ -625,8 +628,104 @@ thrust::device_vector < Float> paracrine::mask_mult(thrust::device_vector<Float>
 }
 
 
+//Inner Product Function
+//Just doing this so we can have an easier time reading math
+Float paracrine::inner_product(thrust::device_vector<Float> A, thrust::device_vector<Float> B) {
+
+	Float result = thrust::inner_product(A.begin(), A.end(), B.begin(), 0.0f);
+
+	return result;
+}
+
+
+//Conjugate Gradient Function
+thrust::device_vector<Float> paracrine::CG(thrust::device_vector<Float> A, thrust::device_vector<Float> b, thrust::device_vector<Float> grid,
+	thrust::device_vector<Float> laplacian_grid, int max_iterations, Float error_tol) {
+	std::cout << "Conjugate Gradient Started" << std::endl;
+
+
+
+	//Solves Ax=b (takes in A and b, returns x)
+	//A has size 3x3x3 and b has size grid_size*grid_size*grid_size
+	//remember that when we multiply A and x, we will get Ax which is grid_size x grid_size x grid_size  (by using our mask_mult function)
+
+	//See B2 in https://www.cs.cmu.edu/~quake-papers/painless-conjugate-gradient.pdf 
+
+	//set counter to 0
+	int counter = 0;
+
+	//To determine residual, we need r=b-Ax
+	//but we need to find Ax first
+	//First guess x: (remember we flatten our matrices)
+	thrust::device_vector<Float> x(grid_size * grid_size * grid_size);
+	for (int i = 0; i < grid_size * grid_size * grid_size; i++) {
+		x[i] = (1 - dt * decay) * grid[i] + dt * diffusion * laplacian_grid[i];
+	}
+	//Laplacian grid(grid_size * grid_size * grid_size) is the grid multiplied by the discrete laplacian with mask_mult function
+
+	//Calculate Ax with our initial guess x
+	thrust::device_vector<Float> Ax = mask_mult(x, A); //Ax is now grid_size x grid_size x grid_size
+
+	//Determine residual r = b - Ax
+	thrust::device_vector<Float> r(grid_size * grid_size * grid_size);
+	thrust::transform(b.begin(), b.end(), Ax.begin(), r.begin(), thrust::minus<Float>()); 
+
+	//Take copy of r (MAYBE ERROR HERE)
+	thrust::device_vector<Float> d = r;
+
+	Float delta_new = inner_product(r, r);
+	Float delta_old = delta_new;
+	Float alpha;
+	Float beta;
+	//thrust::device_vector<Float> alpha_d(grid_size*grid_size*grid_size);//replace with dummy to save space
+	//thrust::device_vector<Float> alpha_q(grid_size*grid_size*grid_size);//replace with dummy to save space
+	//thrust::device_vector<Float> beta_d(grid_size*grid_size*grid_size);//replace with dummy to save space
+	thrust::device_vector<Float> dummy(grid_size*grid_size*grid_size);//replace with dummy to save space
+	thrust::device_vector<Float> q(grid_size * grid_size * grid_size);
+
+	//Start loop
+	while (counter < max_iterations && delta_new > error_tol) {
+		q = mask_mult(d, A);
+		alpha = delta_new / (inner_product(d, q));
+		
+		//calculate x = x + alpha*d
+		//first calculate alpha_d=alpha*d
+		thrust::transform(d.begin(), d.end(), dummy.begin(), alpha * _1);
+		//now calculate x = x +alpha_d
+		thrust::transform(x.begin(), x.end(), dummy.begin(), x.begin(), thrust::plus<Float>());
+
+
+		if (counter % 50 == 0) { //recalculate residual to remove floating point error
+			//r=b-Ax
+			//thrust::device_vector<Float> Ax = mask_mult(x, A);  //calculate Ax
+			dummy = mask_mult(x, A);  //calculate Ax
+			thrust::transform(b.begin(), b.end(), dummy.begin(), r.begin(), thrust::minus<Float>()); //r=b-Ax
+		}
+
+		else {
+			//r=r-alpha*q
+			thrust::transform(q.begin(), q.end(), dummy.begin(), alpha * _1); //alpha*q=alpha_q
+			thrust::transform(r.begin(), r.end(), dummy.begin(), r.begin(), thrust::minus<Float>()); //r=r-alpha_q
+		}
+
+		delta_old = delta_new;
+		delta_new = inner_product(r, r);
+		beta = delta_new / delta_old;
+
+		//calculate d=r+beta*d
+		thrust::transform(d.begin(), d.end(), dummy.begin(), beta * _1); //beta*d=beta_d
+		thrust::transform(r.begin(), r.end(), dummy.begin(), d.begin(), thrust::plus<Float>()); //d=r+beta_d
+		
+		counter += 1;
+	}
+	std::cout << "Done after " << counter << " iterations" << std::endl;
+
+	return x;
+
+}
+
 //Diffusion Stepper Function
-thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid) {
+thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid, Float dx, Float dt, Float diffusion, Float decay) {
 	std::cout << "Diffusion Stepper Started" << std::endl;
 	//Returns Grid
 //	std::cout << stencil[0] << std::endl;
@@ -645,4 +744,6 @@ thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector
 
 	
 
+	//just a goofy return for now
+	return laplacian_grid;
 }
