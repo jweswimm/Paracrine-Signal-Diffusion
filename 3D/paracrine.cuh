@@ -1,5 +1,3 @@
-//Author: Joe Wimmergren 2022
-#pragma once
 #include <iostream>
 #include <thrust/host_vector.h>
 #include <thrust/device_vector.h>
@@ -88,12 +86,14 @@ class paracrine {
 
 		//Member functions
 		void initialize();
-		thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thrust::host_vector<Float> grid);
-		thrust::device_vector<Float> paracrine::spread(thrust::device_vector<Float> grid, thrust::device_vector<Float> neuron_concentrations);
+		thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thrust::device_vector<Float> grid);
+		thrust::device_vector<Float> paracrine::spread(Float generation_constant,thrust::device_vector<Float> grid, thrust::device_vector<Float> neuron_concentrations);
 		thrust::device_vector<Float> paracrine::mask_mult(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask);
-		thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid, Float dx, Float dt, Float diffusion, Float decay);
+		thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid);
 		Float paracrine::inner_product(thrust::device_vector<Float> A, thrust::device_vector<Float> B);
 		thrust::device_vector<Float> paracrine::CG(thrust::device_vector<Float> A, thrust::device_vector<Float> b,thrust::device_vector<Float> grid, thrust::device_vector<Float> laplacian_grid, int max_iterations, Float error_tol);
+		thrust::device_vector<Float> paracrine::C_G(thrust::device_vector<Float> A, thrust::device_vector<Float> b,thrust::device_vector<Float> grid, thrust::device_vector<Float> laplacian_grid, int max_iterations, Float error_tol);
+		thrust::device_vector<Float> paracrine::initial_guess(thrust::device_vector<Float> grid, thrust::device_vector<Float> laplacian_grid);
 
 };
 
