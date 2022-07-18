@@ -1,4 +1,3 @@
-//Author: Joe Wimmergren 2022
 #include "paracrine.cuh"
 #include <iostream>
 #include <thrust/device_vector.h>
@@ -219,11 +218,6 @@ __global__ void gpu_interpolate(int nnz, int grid_size, Float* CT, Float* grid, 
 	int rowsize = 8;
 
 
-
-
-
-
-
 	for (int row = blockIdx.x * blockDim.x + threadIdx.x; row < nnz; row += gridDim.x * blockDim.x) //neuron loop
 	{
 		//Float* CT_ptr = CT_ptr + idx; //move the pointer depending on the neuron
@@ -431,10 +425,6 @@ thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thru
 }
 
 
-
-
-	
-
 __global__ void gpu_spread(int nnz, int grid_size, Float* grid, Float* P, 
 	int* x0, int* x1, int* y0, int* y1, int* z0, int* z1){
 
@@ -574,16 +564,7 @@ __global__ void gpu_mask_mult(Float* image, Float* stencil, Float* result, int i
 	}
 
 
-
-
-	
-	
-
 }
-
-
-
-
 
 
 thrust::device_vector < Float> paracrine::mask_mult(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask) {
