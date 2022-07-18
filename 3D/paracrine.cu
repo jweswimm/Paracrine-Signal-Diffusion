@@ -30,9 +30,7 @@ void paracrine::initialize(){
 	//determine closest gridpoints to neurons
 	//neuron_x/y/z are thrust vectors with neuron locations
 	//x0,x1,etc. are vectors with the closest gridpoints (each with size nnz)
-	/// <summary>
-	/// BE CAREFUL ABOUT CEIL FUNCTION AND OVERFLOAT
-	/// </summary>
+	/ BE CAREFUL ABOUT CEIL FUNCTION AND OVERFLOAT
 	for (int i = 0; i < nnz; i++) {
 		x0[i] = floor(neuron_x[i]);
 		x1[i] = ceil(neuron_x[i]);
@@ -210,7 +208,7 @@ void paracrine::initialize(){
 __global__ void gpu_interpolate(int nnz, int grid_size, Float* CT, Float* grid, Float* neuron_concentrations, Float* Q,
 	int* x0, int* x1, int* y0, int* y1, int* z0, int* z1)
 	//https://developer.nvidia.com/blog/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
-{ //can't be member of class paracrine?
+{ 
 	//EACH NEURON GETS A THREAD
 
 	int grid_height = grid_size;
@@ -279,7 +277,7 @@ __global__ void gpu_interpolate(int nnz, int grid_size, Float* CT, Float* grid, 
 			+ grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z1[row]]  //grid[x0, y0, z1]
 			+ grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]]  //grid[x0, y1, z0]
 			- grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]];  //grid[x0, y0, z0]
-		//precalculate the indices !!!!!
+		//precalculate the indices
 
 
 		neuron_concentrations[row] = 0.0; //reset 
@@ -593,10 +591,6 @@ thrust::device_vector < Float> paracrine::mask_mult(thrust::device_vector<Float>
 	//We now have image. Image is just grid (from argument to this function) with 0s on the boundaries.
 	//Now when we convolve, we won't lose any dimensions (our stencil is 3x3x3 so we only needed 1 extra space in each dimension)
 	
-
-
-
-
 
 	//Create new 3d thrust vector that will eventually be output
 	thrust::device_vector<Float> result(grid_size * grid_size * grid_size,0.0);
