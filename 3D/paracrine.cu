@@ -11,6 +11,8 @@
 
 using namespace thrust::placeholders;
 
+
+
 //Paracrine Initialization Function
 void paracrine::initialize(){
 	std::cout << "Beginning Paracrine Initialization" << std::endl;
@@ -69,7 +71,7 @@ void paracrine::initialize(){
 		del_y[i] = ((neuron_y[i] - y0[i]) / (y1[i] - y0[i]));
 		del_z[i] = ((neuron_z[i] - z0[i]) / (z1[i] - z0[i]));
 	}
-	std::cout << "del_x:" << del_x[0] << " del_y:" << del_y[0] << " del_z:" << del_z[0] << std::endl;
+	//std::cout << "del_x:" << del_x[0] << " del_y:" << del_y[0] << " del_z:" << del_z[0] << std::endl;
 
 
 	//flatten 2d thrust vectors by using https://stackoverflow.com/questions/16599501/cudamemcpy-function-usage/16616738#16616738
@@ -290,7 +292,8 @@ __global__ void gpu_interpolate(int nnz, int grid_size, Float* CT, Float* grid, 
 		for (int j = 0; j < 8; j++) { //goes across rows of CT and columns of Q
 //			std::cout << "neuron concentration:" << std::endl;
 //			std::cout << neuron_concentrations[n]<<" += " << neuron_concentrations[n]<<" + " << CT[8 * n + j] <<" * " <<Q[nnz * j + n] << std::endl;
-			neuron_concentrations[row] = neuron_concentrations[row] + CT[8 * row + j] * Q[nnz * j + row]; //getting the diagonal elements of (C^T * Q) (matrix mult)
+			//neuron_concentrations[row] = neuron_concentrations[row] + CT[8 * row + j] * Q[nnz * j + row]; //getting the diagonal elements of (C^T * Q) (matrix mult)
+			atomicAdd(&neuron_concentrations[row], CT[8 * row + j] * Q[nnz * j + row]); //getting the diagonal elements of (C^T * Q) (matrix mult)
 //		if (threadIdx.x == 0){
 			//printf("%.6f \n",neuron_concentrations[row]);
 //		}
@@ -301,8 +304,9 @@ __global__ void gpu_interpolate(int nnz, int grid_size, Float* CT, Float* grid, 
 
 
 
-thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thrust::host_vector<Float> grid) { //return  thrust array of concentrations at neuron locations
+thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thrust::device_vector<Float> grid) { //return  thrust array of concentrations at neuron locations
 //	thrust::host_vector<Float> neuron_concentrations(nnz);
+	std::cout << "Interpolation Started" << std::endl;
 
 	int grid_width = grid_size; 
 	int grid_height = grid_size; 
@@ -390,7 +394,7 @@ thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thru
 //	cudaMemcpy(d_CT, CT_ptr, 8*nnz*sizeof(Float), cudaMemcpyHostToDevice);
 
 
-	thrust::device_vector<Float> d_grid = grid;
+	//thrust::device_vector<Float> d_grid = grid;
 //	Float* d_grid;
 //	Float* grid_ptr = thrust::raw_pointer_cast(grid.data());
 //	cudaMalloc(&d_grid, 8 * nnz * sizeof(Float));
@@ -415,7 +419,7 @@ thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thru
 
 
 
-	gpu_interpolate <<< cuda_grid_size, block_size >>> (nnz, grid_size, thrust::raw_pointer_cast(d_CT.data()), thrust::raw_pointer_cast(d_grid.data()),
+	gpu_interpolate <<< cuda_grid_size, block_size >>> (nnz, grid_size, thrust::raw_pointer_cast(d_CT.data()), thrust::raw_pointer_cast(grid.data()),
 		thrust::raw_pointer_cast(d_neuron_concentrations.data()), thrust::raw_pointer_cast(d_Q.data()), thrust::raw_pointer_cast(x0.data()), 
 		thrust::raw_pointer_cast(x1.data()), thrust::raw_pointer_cast(y0.data()), thrust::raw_pointer_cast(y1.data()),
 		thrust::raw_pointer_cast(z0.data()), thrust::raw_pointer_cast(z1.data()));
@@ -437,28 +441,38 @@ __global__ void gpu_spread(int nnz, int grid_size, Float* grid, Float* P,
 	int grid_height = grid_size;
 	int grid_depth = grid_size;
 
-	for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < nnz; i += gridDim.x * blockDim.x){ //neuron loop
-		//check that p is constructed correctly
-		grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z0[i]] += P[nnz * 0 + i];
+	for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < nnz; i += gridDim.x * blockDim.x) { //neuron loop
+		//check that p is constructed correctly NEED ATOMIC ADD
+		/*grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z0[i]] += P[nnz * 0 + i];
 		grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z1[i]] += P[nnz * 1 + i];
 		grid[grid_height * grid_depth * x0[i] + grid_depth * y1[i] + z0[i]] += P[nnz * 2 + i];
 		grid[grid_height * grid_depth * x0[i] + grid_depth * y1[i] + z1[i]] += P[nnz * 3 + i];
 		grid[grid_height * grid_depth * x1[i] + grid_depth * y0[i] + z0[i]] += P[nnz * 4 + i];
 		grid[grid_height * grid_depth * x1[i] + grid_depth * y0[i] + z1[i]] += P[nnz * 5 + i];
 		grid[grid_height * grid_depth * x1[i] + grid_depth * y1[i] + z0[i]] += P[nnz * 6 + i];
-		grid[grid_height * grid_depth * x1[i] + grid_depth * y1[i] + z1[i]] += P[nnz * 7 + i];
+		grid[grid_height * grid_depth * x1[i] + grid_depth * y1[i] + z1[i]] += P[nnz * 7 + i];*/
+
+		atomicAdd(&grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z0[i]], P[nnz * 0 + i]);
+		atomicAdd(&grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z1[i]], P[nnz * 1 + i]);
+		atomicAdd(&grid[grid_height * grid_depth * x0[i] + grid_depth * y1[i] + z0[i]], P[nnz * 2 + i]);
+		atomicAdd(&grid[grid_height * grid_depth * x0[i] + grid_depth * y1[i] + z1[i]], P[nnz * 3 + i]);
+		atomicAdd(&grid[grid_height * grid_depth * x1[i] + grid_depth * y0[i] + z0[i]], P[nnz * 4 + i]);
+		atomicAdd(&grid[grid_height * grid_depth * x1[i] + grid_depth * y0[i] + z1[i]], P[nnz * 5 + i]);
+		atomicAdd(&grid[grid_height * grid_depth * x1[i] + grid_depth * y1[i] + z0[i]], P[nnz * 6 + i]);
+		atomicAdd(&grid[grid_height * grid_depth * x1[i] + grid_depth * y1[i] + z1[i]], P[nnz * 7 + i]);
 	}
+
 }
 
 
 
 
 //spread function
-thrust::device_vector<Float> paracrine::spread(thrust::device_vector<Float> grid,thrust::device_vector<Float> neuron_concentrations ) {
+thrust::device_vector<Float> paracrine::spread(Float generation_constant, thrust::device_vector<Float> grid,thrust::device_vector<Float> neuron_concentrations ) {
 	std::cout << "Spreading Started" << std::endl;
 	
 	//calculate neurotransmitter generation (thrust vector of size nnz)
-	Float generation_constant = 1; //for now just have as a constant
+//	Float generation_constant = 1; //for now just have as a constant
 
 
 
@@ -541,17 +555,19 @@ __global__ void gpu_mask_mult(Float* image, Float* stencil, Float* result, int i
 
 
 				//Now multiply element wise and sum to get actual values
-				Float sum = 0.0;
+				//Float sum = 0.0;
 				for (int ii = 0; ii < mask_size; ii++) {
 					for (int jj = 0; jj < mask_size; jj++) {
 						for (int kk = 0; kk < mask_size; kk++) {
-							sum += (image[image_size * image_size * (i+ii) + image_size * (j+jj) + (k+kk)])
-								    * (stencil[mask_size * mask_size * ii + mask_size*jj + kk]);
+							//sum += (image[image_size * image_size * (i+ii) + image_size * (j+jj) + (k+kk)])
+							//	    * (stencil[mask_size * mask_size * ii + mask_size*jj + kk]);
+							atomicAdd(&result[grid_size * grid_size * i + grid_size * j + k], (image[image_size * image_size * (i+ii) + image_size * (j+jj) + (k+kk)])
+								    * (stencil[mask_size * mask_size * ii + mask_size*jj + kk]));
 						}
 					}
 				}
 
-				result[grid_size * grid_size * i + grid_size * j + k] = sum;
+				//result[grid_size * grid_size * i + grid_size * j + k] = sum;
 
 			}
 		}
@@ -602,7 +618,7 @@ thrust::device_vector < Float> paracrine::mask_mult(thrust::device_vector<Float>
 
 
 	//Create new 3d thrust vector that will eventually be output
-	thrust::device_vector<Float> result(grid_size * grid_size * grid_size);
+	thrust::device_vector<Float> result(grid_size * grid_size * grid_size,0.0);
 
 
 	//Call gpu_convolve function to do 3d convolution with mask and image
@@ -627,6 +643,26 @@ thrust::device_vector < Float> paracrine::mask_mult(thrust::device_vector<Float>
 	return result;
 }
 
+__global__ void gpu_initial_guess(int grid_size, Float diffusion, Float decay, Float dt, Float* grid, Float* laplacian_grid, Float* x) {
+
+	for (int i = blockIdx.x * blockDim.x + threadIdx.x; i < grid_size*grid_size*grid_size; i += gridDim.x * blockDim.x) {
+		x[i] = (1 - dt * decay) * grid[i] + dt * diffusion * laplacian_grid[i];
+	}
+}
+
+thrust::device_vector<Float> paracrine::initial_guess(thrust::device_vector<Float> grid, thrust::device_vector<Float> laplacian_grid) {
+	thrust::device_vector<Float> x(grid_size * grid_size * grid_size);
+	int block_size = 512; //schedule a block full of threads
+	int cuda_grid_size = ceil((grid_size*grid_size*grid_size) / block_size);
+
+	gpu_initial_guess << < cuda_grid_size, block_size >> > (grid_size, diffusion, decay, dt, 
+		thrust::raw_pointer_cast(grid.data()), thrust::raw_pointer_cast(laplacian_grid.data()), thrust::raw_pointer_cast(x.data()));
+	gpuErrchk(cudaPeekAtLastError());
+	gpuErrchk(cudaDeviceSynchronize());
+
+	return x;
+
+}
 
 //Inner Product Function
 //Just doing this so we can have an easier time reading math
@@ -637,11 +673,52 @@ Float paracrine::inner_product(thrust::device_vector<Float> A, thrust::device_ve
 	return result;
 }
 
+//__global__ void gpu_C_G() {
+//
+//}
+//
+//
+////Conjugate Gradient Function Without Relying too much on thrust operations
+//thrust::device_vector<Float> paracrine::C_G(thrust::device_vector<Float> A, thrust::device_vector<Float> b, thrust::device_vector<Float> grid,
+//	thrust::device_vector<Float> laplacian_grid, int max_iterations, Float error_tol) {
+//	//Solves Ax=b (takes in A and b, returns x)
+//	//A has size 3x3x3 and b has size grid_size*grid_size*grid_size
+//	//remember that when we multiply A and x, we will get Ax which is grid_size x grid_size x grid_size  (by using our mask_mult function)
+//
+//	//See B2 in https://www.cs.cmu.edu/~quake-papers/painless-conjugate-gradient.pdf 
+//
+//	//set counter to 0
+//	int counter = 0;
+//
+//	//To determine residual, we need r=b-Ax
+//	//but we need to find Ax first
+//	//First guess x: (remember we flatten our matrices)
+//	//Call initial guess creator
+//	thrust::device_vector<Float> x = initial_guess(grid, laplacian_grid);
+//
+//
+//	int block_size = 1024; //schedule a block full of threads
+//	int cuda_grid_size = ceil((grid_size*grid_size*grid_size) / block_size);
+//	
+//	//begin loop
+//	//while i < max iterations and error_tolerance > error
+//
+//	//calculate Ax for this iteration
+//	thrust::device_vector<Float> Ax = mask_mult(x, A);
+//
+//	gpu_C_G << < cuda_grid_size, block_size >> > (thrust::raw_pointer_cast(Ax.data()),thrust::raw_pointer_cast(x.data()),thrust::raw_pointer_cast(A.data()),thrust::raw_pointer_cast(b.data()),grid_size, diffusion, decay, dt, 
+//		thrust::raw_pointer_cast(grid.data()), thrust::raw_pointer_cast(laplacian_grid.data()), thrust::raw_pointer_cast(x.data()));
+//
+//	//end loop
+//	gpuErrchk(cudaPeekAtLastError());
+//	gpuErrchk(cudaDeviceSynchronize());
+//}
+
 
 //Conjugate Gradient Function
 thrust::device_vector<Float> paracrine::CG(thrust::device_vector<Float> A, thrust::device_vector<Float> b, thrust::device_vector<Float> grid,
 	thrust::device_vector<Float> laplacian_grid, int max_iterations, Float error_tol) {
-	std::cout << "Conjugate Gradient Started" << std::endl;
+	//std::cout << "Conjugate Gradient Started" << std::endl;
 
 
 
@@ -657,6 +734,9 @@ thrust::device_vector<Float> paracrine::CG(thrust::device_vector<Float> A, thrus
 	//To determine residual, we need r=b-Ax
 	//but we need to find Ax first
 	//First guess x: (remember we flatten our matrices)
+
+	//Call initial guess creator ENABLE THIS WHEN DOING LARGER COMPUTATIONS
+	//thrust::device_vector<Float> x = initial_guess(grid, laplacian_grid);
 	thrust::device_vector<Float> x(grid_size * grid_size * grid_size);
 	for (int i = 0; i < grid_size * grid_size * grid_size; i++) {
 		x[i] = (1 - dt * decay) * grid[i] + dt * diffusion * laplacian_grid[i];
@@ -717,18 +797,18 @@ thrust::device_vector<Float> paracrine::CG(thrust::device_vector<Float> A, thrus
 		thrust::transform(r.begin(), r.end(), dummy.begin(), d.begin(), thrust::plus<Float>()); //d=r+beta_d
 		
 		counter += 1;
+		std::cout << "Iteration " << counter << " done" << std::endl;
 	}
-	std::cout << "Done after " << counter << " iterations" << std::endl;
+	//std::cout << "Done after " << counter << " iterations" << std::endl;
 
 	return x;
 
 }
 
 //Diffusion Stepper Function
-thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid, Float dx, Float dt, Float diffusion, Float decay) {
-	std::cout << "Diffusion Stepper Started" << std::endl;
+thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid) {
+	//std::cout << "Diffusion Stepper Started" << std::endl;
 	//Returns Grid
-//	std::cout << stencil[0] << std::endl;
 
 	//get b so that we can have Ax=b
 	b = mask_mult(grid, B); //multiplies grid and B. Grid has size 32x32x32 and mask has size 3x3x3
@@ -741,9 +821,14 @@ thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector
 	laplacian_grid = mask_mult(grid, stencil);
 
 	//start conjugate gradient
+	int max_iterations = 20;
+	float error_tol = 0.000001;
+	//A is calculated in initialization()
+	grid = CG(A, b, grid, laplacian_grid, max_iterations, error_tol);
+
+	std::cout << "Diffusion Step DONE" << std::endl;
 
 	
 
-	//just a goofy return for now
-	return laplacian_grid;
+	return grid;
 }
