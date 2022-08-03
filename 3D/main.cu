@@ -1,12 +1,9 @@
 #include "paracrine.cuh"
-#include <iostream>
-#include <thrust/device_vector.h>
-#include <thrust/host_vector.h>
-#include <cstdlib>
-#include <fstream>
 
-
+//Tests
 void innerproducttest() {
+  //Read that thrust inner sometimes product yields weird results
+  //so I thought it'd be good to check
   //Get all variables set so we can create paracrine object
   int grid_size = 2;
   int nnz = 1;
