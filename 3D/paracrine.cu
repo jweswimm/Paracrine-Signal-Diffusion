@@ -6,7 +6,6 @@
 #include <thrust/inner_product.h>
 #include <thrust/transform.h>
 #include "cuda_runtime.h"
-#include "device_launch_parameters.h"
 
 using namespace thrust::placeholders;
 
@@ -43,17 +42,12 @@ void paracrine::initialize() {
   for (int i = 0; i < nnz * 8; i++)
     Q.push_back(0.0);
 
-  //	std::cout << "the 5th neuron has position=" << neuron_y[4] << " with closest gridpoints at x0=" << y0[4] << " and x1=" << y1[4] << std::endl;
-
-  //thrust::fill(Q.begin(), Q.end(), 100);
-  //	thrust::copy(x0.begin(), x0.end(), Q.begin());
-
   //Now calculate distance vectors
   thrust::host_vector < Float > del_x(nnz);
   thrust::host_vector < Float > del_y(nnz);
   thrust::host_vector < Float > del_z(nnz);
 
-  //we can create functor to apply the same operation across all of the elements of the thrust vector, but this is hard and I don't really understand it
+  //we can create functor to apply the same operation across all of the elements of the thrust vector
   //see struct del_operator in paracrine.cuh
   //https://www.bu.edu/pasi/files/2011/07/Lecture6.pdf page 17 for an example of building custom thrust operations
   //for now, implement naiive way with for loop
@@ -63,7 +57,6 @@ void paracrine::initialize() {
     del_y[i] = ((neuron_y[i] - y0[i]) / (y1[i] - y0[i]));
     del_z[i] = ((neuron_z[i] - z0[i]) / (z1[i] - z0[i]));
   }
-  //std::cout << "del_x:" << del_x[0] << " del_y:" << del_y[0] << " del_z:" << del_z[0] << std::endl;
 
   //flatten 2d thrust vectors by using https://stackoverflow.com/questions/16599501/cudamemcpy-function-usage/16616738#16616738
   //Given a matrix A[x,y], we can convert to a long vector by 
@@ -89,11 +82,6 @@ void paracrine::initialize() {
     Q[rowsize * 7 + column] = del_x[column] * del_y[column] * del_z[column];
   }
 
-  //Now test to make sure Q is saved correctly
-  //	int column = 4;
-  //	for (int row = 0; row < nnz; row++)
-  //		std::cout << "Row: " << row << "      Q=" << Q[rowsize * row + column] << std::endl;
-
   //Initialize weighted spread to 0.0 so we can use unique indices
   for (int i = 0; i < nnz * 8; i++)
     weighted_spread.push_back(0.0);
@@ -111,12 +99,6 @@ void paracrine::initialize() {
     weighted_spread[rowsize * 6 + column] = (del_x[column]) * (del_y[column]) * (ones[column] - del_z[column]);
     weighted_spread[rowsize * 7 + column] = (del_x[column]) * (del_y[column]) * (del_z[column]);
   }
-
-  //	std::cout << "del_x:" << del_x[0] << " del_y:" << del_y[0] << " del_z:" << del_z[0] << std::endl;
-  //test weighted_spread
-  //	int column = 0;
-  //	for (int row = 0; row < nnz; row++)
-  //		std::cout << weighted_spread[rowsize * row + column] << std::endl; 
 
   //Initialize Diffusion Part
   //Initialize Stencil, eye, A, B (used in diffusion)
@@ -199,39 +181,14 @@ __global__ void gpu_interpolate(int nnz, int grid_size, Float * CT, Float * grid
   int * x0, int * x1, int * y0, int * y1, int * z0, int * z1)
 //https://developer.nvidia.com/blog/cuda-pro-tip-write-flexible-kernels-grid-stride-loops/
 {
-  //EACH NEURON GETS A THREAD
-
+  //Each neuron gets a thread 
   int grid_height = grid_size;
   int grid_depth = grid_size;
   int rowsize = 8;
 
   for (int row = blockIdx.x * blockDim.x + threadIdx.x; row < nnz; row += gridDim.x * blockDim.x) //neuron loop
   {
-    //Float* CT_ptr = CT_ptr + idx; //move the pointer depending on the neuron
-    //Float CT = *CT_ptr; //get values of CT
-
-    //Float* grid_ptr = grid_ptr + idx;
-    //Float grid = *grid_ptr;
-
-    //Float* x0_ptr = x0_ptr + idx;
-    //Float x0 = *x0_ptr;
-
-    //Float* x1_ptr = x1_ptr + idx;
-    //Float x1 = *x1_ptr;
-
-    //Float* y0_ptr = y0_ptr + idx;
-    //Float y0 = *y0_ptr;
-
-    //Float* y1_ptr = y1_ptr + idx;
-    //Float y1 = *y1_ptr;
-
-    //Float* z0_ptr = z0_ptr + idx;
-    //Float z0 = *z0_ptr;
-
-    //Float* z1_ptr = z1_ptr + idx;
-    //Float z1 = *z1_ptr;
-
-    //			std::cout <<"testvalue: "<< rowsize * row + column << std::endl;
+    
     CT[rowsize * row + 0] = grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
 
     CT[rowsize * row + 1] = grid[grid_height * grid_depth * x1[row] + grid_depth * y0[row] + z0[row]] //grid[x1, y0, z0]
@@ -285,24 +242,21 @@ __global__ void gpu_interpolate(int nnz, int grid_size, Float * CT, Float * grid
       grid[grid_height * grid_depth * x0[row] + grid_depth * y1[row] + z0[row]] //grid[x0, y1, z0]
       -
       grid[grid_height * grid_depth * x0[row] + grid_depth * y0[row] + z0[row]]; //grid[x0, y0, z0]
-    //precalculate the indices
+    //TODO: precalculate the indices
 
     neuron_concentrations[row] = 0.0; //reset 
     for (int j = 0; j < 8; j++) { //goes across rows of CT and columns of Q
-      //			std::cout << "neuron concentration:" << std::endl;
-      //			std::cout << neuron_concentrations[n]<<" += " << neuron_concentrations[n]<<" + " << CT[8 * n + j] <<" * " <<Q[nnz * j + n] << std::endl;
       //neuron_concentrations[row] = neuron_concentrations[row] + CT[8 * row + j] * Q[nnz * j + row]; //getting the diagonal elements of (C^T * Q) (matrix mult)
       atomicAdd( & neuron_concentrations[row], CT[8 * row + j] * Q[nnz * j + row]); //getting the diagonal elements of (C^T * Q) (matrix mult)
-      //		if (threadIdx.x == 0){
-      //printf("%.6f \n",neuron_concentrations[row]);
-      //		}
+	    
     }
 
   }
+	
 }
 
 thrust::device_vector < Float > paracrine::interpolate(int nnz, int grid_size, thrust::device_vector < Float > grid) { //return  thrust array of concentrations at neuron locations
-  //	thrust::host_vector<Float> neuron_concentrations(nnz);
+ 
   std::cout << "Interpolation Started" << std::endl;
 
   int grid_width = grid_size;
@@ -377,35 +331,14 @@ thrust::device_vector < Float > paracrine::interpolate(int nnz, int grid_size, t
   //	}
   //-------------------------------------END OF CPU INTERPOLATION--------------------------------------------------------------------------
 
-  //	std::cout << "Neuron Concentration: " <<neuron_concentrations[0] << std::endl;
 
   //-------------------------------------GPU INTERPOLATION----------------------------------------------------------------------------------
-  // get vectors on device
-  //allocate memory on device for d_CT
+	
+  //Create device vectors
   thrust::device_vector < Float > d_CT = CT;
-  //	Float* d_CT;
-  //	Float* CT_ptr = thrust::raw_pointer_cast(CT.data());
-  //	cudaMalloc(&d_CT, 8 * nnz * sizeof(Float));
-  //	cudaMemcpy(d_CT, CT_ptr, 8*nnz*sizeof(Float), cudaMemcpyHostToDevice);
-
-  //thrust::device_vector<Float> d_grid = grid;
-  //	Float* d_grid;
-  //	Float* grid_ptr = thrust::raw_pointer_cast(grid.data());
-  //	cudaMalloc(&d_grid, 8 * nnz * sizeof(Float));
-  //	cudaMemcpy(d_grid, grid_ptr, 8*nnz*sizeof(Float), cudaMemcpyHostToDevice);
-
   thrust::device_vector < Float > d_neuron_concentrations(nnz);
-  //Float* d_neuron_concentrations;
-  //Float* neuron_concentrations_ptr = thrust::raw_pointer_cast(neuron_concentrations.data());
-  //cudaMalloc(&d_neuron_concentrations, 8 * nnz * sizeof(Float));
-  //cudaMemcpy(d_neuron_concentrations, neuron_concentrations_ptr, 8*nnz*sizeof(Float), cudaMemcpyHostToDevice);
-
   thrust::device_vector < Float > d_Q = Q;
-  //Float* d_Q;
-  //Float* Q_ptr = thrust::raw_pointer_cast(Q.data());
-  //cudaMalloc(&d_Q, 8 * nnz * sizeof(Float));
-  //cudaMemcpy(d_Q, Q_ptr, 8*nnz*sizeof(Float), cudaMemcpyHostToDevice);
-
+  
   //Calculate blocksize and gridsize
   int block_size = 1024; //schedule a block full of number of neurons
   int cuda_grid_size = nnz / block_size + 1;
@@ -416,7 +349,6 @@ thrust::device_vector < Float > paracrine::interpolate(int nnz, int grid_size, t
     thrust::raw_pointer_cast(z0.data()), thrust::raw_pointer_cast(z1.data()));
   gpuErrchk(cudaPeekAtLastError());
   gpuErrchk(cudaDeviceSynchronize());
-  //	std::cout << d_neuron_concentrations[0] << "TESTING" << std::endl;
 
   return d_neuron_concentrations;
 }
@@ -628,48 +560,9 @@ Float paracrine::inner_product(thrust::device_vector < Float > A, thrust::device
   return result;
 }
 
-//__global__ void gpu_C_G() {
-//
-//}
-//
-//
-////Conjugate Gradient Function Without Relying too much on thrust operations
-//thrust::device_vector<Float> paracrine::C_G(thrust::device_vector<Float> A, thrust::device_vector<Float> b, thrust::device_vector<Float> grid,
-//	thrust::device_vector<Float> laplacian_grid, int max_iterations, Float error_tol) {
-//	//Solves Ax=b (takes in A and b, returns x)
-//	//A has size 3x3x3 and b has size grid_size*grid_size*grid_size
-//	//remember that when we multiply A and x, we will get Ax which is grid_size x grid_size x grid_size  (by using our mask_mult function)
-//
-//	//See B2 in https://www.cs.cmu.edu/~quake-papers/painless-conjugate-gradient.pdf 
-//
-//	//set counter to 0
-//	int counter = 0;
-//
-//	//To determine residual, we need r=b-Ax
-//	//but we need to find Ax first
-//	//First guess x: (remember we flatten our matrices)
-//	//Call initial guess creator
-//	thrust::device_vector<Float> x = initial_guess(grid, laplacian_grid);
-//
-//
-//	int block_size = 1024; //schedule a block full of threads
-//	int cuda_grid_size = ceil((grid_size*grid_size*grid_size) / block_size);
-//	
-//	//begin loop
-//	//while i < max iterations and error_tolerance > error
-//
-//	//calculate Ax for this iteration
-//	thrust::device_vector<Float> Ax = mask_mult(x, A);
-//
-//	gpu_C_G << < cuda_grid_size, block_size >> > (thrust::raw_pointer_cast(Ax.data()),thrust::raw_pointer_cast(x.data()),thrust::raw_pointer_cast(A.data()),thrust::raw_pointer_cast(b.data()),grid_size, diffusion, decay, dt, 
-//		thrust::raw_pointer_cast(grid.data()), thrust::raw_pointer_cast(laplacian_grid.data()), thrust::raw_pointer_cast(x.data()));
-//
-//	//end loop
-//	gpuErrchk(cudaPeekAtLastError());
-//	gpuErrchk(cudaDeviceSynchronize());
-//}
-
 //Conjugate Gradient Function
+//TODO: Create CG function in a kernel, not just thrust
+//This is currently the slowest part of the code and it's because I didn't create a nice kernel for it yet
 thrust::device_vector < Float > paracrine::CG(thrust::device_vector < Float > A, thrust::device_vector < Float > b, thrust::device_vector < Float > grid,
   thrust::device_vector < Float > laplacian_grid, int max_iterations, Float error_tol) {
   //std::cout << "Conjugate Gradient Started" << std::endl;
