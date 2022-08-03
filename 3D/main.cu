@@ -2,7 +2,7 @@
 
 //Tests
 void innerproducttest() {
-  //Read that thrust inner sometimes product yields weird results
+  //Read that thrust inner product sometimes yields weird results
   //so I thought it'd be good to check
   //Get all variables set so we can create paracrine object
   int grid_size = 2;
