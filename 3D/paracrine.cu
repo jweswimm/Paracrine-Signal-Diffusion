@@ -20,7 +20,7 @@ void paracrine::initialize() {
   //determine closest gridpoints to neurons
   //neuron_x/y/z are thrust vectors with neuron locations
   //x0,x1,etc. are vectors with the closest gridpoints (each with size nnz)
-  / BE CAREFUL ABOUT CEIL FUNCTION AND OVERFLOAT
+  // BE CAREFUL ABOUT CEIL FUNCTION AND OVERFLOAT
   for (int i = 0; i < nnz; i++) {
     x0[i] = floor(neuron_x[i]);
     x1[i] = ceil(neuron_x[i]);
