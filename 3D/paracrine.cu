@@ -548,7 +548,7 @@ thrust::device_vector < Float > paracrine::initial_guess(thrust::device_vector <
 //Just doing this so we can have an easier time reading math
 Float paracrine::inner_product(thrust::device_vector < Float > A, thrust::device_vector < Float > B) {
 
-  Float result = thrust::inner_product(A.begin(), A.end(), B.begin(), 0.0 f);
+  Float result = thrust::inner_product(A.begin(), A.end(), B.begin(), 0.0f);
 
   return result;
 }
