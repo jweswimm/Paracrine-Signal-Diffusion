@@ -1,11 +1,4 @@
 #include "paracrine.cuh"
-#include <iostream>
-#include <thrust/device_vector.h>
-#include <thrust/host_vector.h>
-#include <thrust/functional.h>
-#include <thrust/inner_product.h>
-#include <thrust/transform.h>
-#include "cuda_runtime.h"
 
 using namespace thrust::placeholders;
 
