@@ -391,12 +391,12 @@ thrust::device_vector < Float > paracrine::spread(Float generation_constant,
   ////	using namespace thrust::placeholders;
   //thrust::host_vector <Float> generation(nnz*8, generation_constant);
   ////thrust::transform(neuron_concentrations.begin(), neuron_concentrations.end(),
-	generation.begin(), generation_constant * _1); //_1 is a placeholder
+	//generation.begin(), generation_constant * _1); //_1 is a placeholder
 
   //thrust::host_vector <Float> P(nnz*8,0.0);
 
   //thrust::transform(generation.begin(), generation.end(), weighted_spread.begin(), 
-	P.begin(), thrust::multiplies<Float>()); //P=generation * weighted_spread element by element
+	//P.begin(), thrust::multiplies<Float>()); //P=generation * weighted_spread element by element
 
   //for (int i=0; i<nnz; i++){ //weighted_spread[rowsize * 0 + column]
   //	grid[grid_height * grid_depth * x0[i] + grid_depth * y0[i] + z0[i]] += P[nnz*0 + i];
