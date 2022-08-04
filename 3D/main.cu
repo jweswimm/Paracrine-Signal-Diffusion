@@ -1,4 +1,5 @@
 #include "paracrine.cuh"
+#include <fstream>
 
 //Tests
 void innerproducttest() {
