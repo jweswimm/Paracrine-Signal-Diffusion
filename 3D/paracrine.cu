@@ -239,8 +239,8 @@ __global__ void gpu_interpolate(int nnz, int grid_size, Float * CT, Float * grid
 
     neuron_concentrations[row] = 0.0; //reset 
     for (int j = 0; j < 8; j++) { //goes across rows of CT and columns of Q
-      //neuron_concentrations[row] = neuron_concentrations[row] + CT[8 * row + j] * Q[nnz * j + row]; //getting the diagonal elements of (C^T * Q) (matrix mult)
-      atomicAdd( & neuron_concentrations[row], CT[8 * row + j] * Q[nnz * j + row]); //getting the diagonal elements of (C^T * Q) (matrix mult)
+      neuron_concentrations[row] = neuron_concentrations[row] + CT[8 * row + j] * Q[nnz * j + row]; //getting the diagonal elements of (C^T * Q) (matrix mult)
+      //atomicAdd( & neuron_concentrations[row], CT[8 * row + j] * Q[nnz * j + row]); //getting the diagonal elements of (C^T * Q) (matrix mult)
 	    
     }
 
@@ -459,15 +459,15 @@ __global__ void gpu_mask_mult(Float * image, Float * stencil, Float * result, in
         for (int ii = 0; ii < mask_size; ii++) {
           for (int jj = 0; jj < mask_size; jj++) {
             for (int kk = 0; kk < mask_size; kk++) {
-              //sum += (image[image_size * image_size * (i+ii) + image_size * (j+jj) + (k+kk)])
-              //	    * (stencil[mask_size * mask_size * ii + mask_size*jj + kk]);
-              atomicAdd( & result[grid_size * grid_size * i + grid_size * j + k], (image[image_size * image_size * (i + ii) + image_size * (j + jj) + (k + kk)]) *
-                (stencil[mask_size * mask_size * ii + mask_size * jj + kk]));
+              sum += (image[image_size * image_size * (i+ii) + image_size * (j+jj) + (k+kk)])
+              	    * (stencil[mask_size * mask_size * ii + mask_size*jj + kk]);
+              //atomicAdd( & result[grid_size * grid_size * i + grid_size * j + k], (image[image_size * image_size * (i + ii) + image_size * (j + jj) + (k + kk)]) *
+                //(stencil[mask_size * mask_size * ii + mask_size * jj + kk]));
             }
           }
         }
 
-        //result[grid_size * grid_size * i + grid_size * j + k] = sum;
+        result[grid_size * grid_size * i + grid_size * j + k] = sum;
 
       }
     }
