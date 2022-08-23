@@ -1,5 +1,5 @@
 # Paracrine-Signal-Diffusion
-The electrophysiology of a neuron is dictated by a series of highly nonlinear, coupled differential equations. When some neurons fire, they release a paracrine factor. The dynamics of paracrine factors can be roughly modeled by the diffusion equation PDE to determine the downstream effects on other neurons. By modeling these interactions we hope to understand the role of paracrine factor dynamics in modulating physiological characteristics (e.g. sleep, muscle control, depression) 
+The electrophysiology of a neuron is dictated by a series of highly nonlinear, coupled differential equations. Some neurons release a paracrine factor when they fire. The dynamics of paracrine factors can be roughly modeled by the diffusion equation PDE to determine the downstream effects on other neurons. By modeling these interactions we hope to understand the role of paracrine factor dynamics in modulating physiological characteristics (e.g. sleep, muscle control, depression) 
 
 The problem of complexity is combatted by further mathematical study and the problem of magnitude is combatted by the glorious area of parallel computing. Thank you, gaming industry, for providing us with advanced GPUs. Thousands of partial differential equations can now be solved at the same time. 
 
