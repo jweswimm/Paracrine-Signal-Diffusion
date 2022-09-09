@@ -1,4 +1,5 @@
-#Author: Joe Wimmergren 2022
+#NOT UP TO DATE
+#NEW ALGORITHMS USED IN PARACRINE SOLVER 
 import torch
 import numpy as np
 import torch.nn.functional as F
