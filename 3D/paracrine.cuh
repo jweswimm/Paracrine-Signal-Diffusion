@@ -89,13 +89,14 @@ class paracrine {
 
 		//Member functions
 		void initialize();
-		thrust::device_vector<Float> paracrine::interpolate(int nnz, int grid_size, thrust::device_vector<Float> grid);
+		thrust::device_vector<Float> paracrine::interpolate(thrust::device_vector<Float> grid);
 		thrust::device_vector<Float> paracrine::spread(Float generation_constant,thrust::device_vector<Float> grid, thrust::device_vector<Float> neuron_concentrations);
-		thrust::device_vector<Float> paracrine::mask_mult(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask);
+		thrust::device_vector<Float> paracrine::convolve(thrust::device_vector<Float> grid, thrust::device_vector<Float> mask);
 		thrust::device_vector <Float> paracrine::diffusion_stepper(thrust::device_vector<Float> grid);
 		Float paracrine::inner_product(thrust::device_vector<Float> A, thrust::device_vector<Float> B);
-		thrust::device_vector<Float> paracrine::CG(thrust::device_vector<Float> A, thrust::device_vector<Float> b,thrust::device_vector<Float> grid, thrust::device_vector<Float> laplacian_grid, int max_iterations, Float error_tol);
-		thrust::device_vector<Float> paracrine::C_G(thrust::device_vector<Float> A, thrust::device_vector<Float> b,thrust::device_vector<Float> grid, thrust::device_vector<Float> laplacian_grid, int max_iterations, Float error_tol);
+		thrust::device_vector<Float> paracrine::CG(thrust::device_vector<Float> A, thrust::device_vector<Float> b);
+		thrust::device_vector<Float> paracrine::update_density(thrust::device_vector<Float> grid);
 		thrust::device_vector<Float> paracrine::initial_guess(thrust::device_vector<Float> grid, thrust::device_vector<Float> laplacian_grid);
 
 };
+
