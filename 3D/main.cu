@@ -3,7 +3,6 @@
 #include <chrono>
 #include <cstdlib>
 
-using namespace std::chrono;
 using namespace thrust::placeholders;
 
 //All together now!
@@ -19,7 +18,7 @@ thrust::device_vector<Float> paracrine_test() {
     srand((unsigned)time(0));
     
     //Get all variables set so we can create paracrine object
-    int grid_size = 32; // total size of grid = (grid_size x grid_size x grid_size)
+    int grid_size = 32; // total size of grid = (grid_size x grid_size x grid_size) 
     int nnz = 10000; //number of neurons
     Float dx = (Float)2/(Float)grid_size; //dx from Ningyuan's code
     Float dt = 0.04; //seconds     (so 40 milliseconds)
@@ -59,6 +58,7 @@ thrust::device_vector<Float> paracrine_test() {
 
     //Initialize object
     p_obj.initialize();
+
     //Open Document
     std::ofstream output;
     output.open("paracrinetest.txt");
@@ -72,14 +72,20 @@ thrust::device_vector<Float> paracrine_test() {
         if (timestep % (total_steps / 100) == 0)
             std::cout << 100 * (Float(timestep) / Float(total_steps)) << "%" << std::endl;
 
-        //Get concentration on grid from neuron concentrations
+        //Spread the neurotransmitter concentration created at neuron locations to the grid
+        //For now, there is a constant amount of neurotransmitter created every timestep
+        //See spread function for more details
         grid = p_obj.spread(0.001, grid, neuron_concentrations);
 
-        //Diffusion step
+        //Step the diffusion equation forward
+        //This includes Crank-Nicolson and conjugate gradient
         grid = p_obj.update_density(grid);
+
+        //Send data to output to analyze
         output << timestep * dt << "," << grid[grid_size * grid_size * 16 + grid_size * 16 + 16] << std::endl;
 
-        //Interpolation step
+        //Interpolate the concentrations at the gridpoints back to the neuron location
+        //So that we can determine the new amount of spreading in the next iteration
         neuron_concentrations = p_obj.interpolate(grid);
 
     }
@@ -652,10 +658,10 @@ int main() {
     //CGtest();
     //laplaciantest();
   	//Interpolationtest();
-  	Spreadtest();   
+  	//Spreadtest();   
     //spread_interp_test();
     //update_density_test();
-    //paracrine_test();
+    paracrine_test();
     //-----------------------
 
 
