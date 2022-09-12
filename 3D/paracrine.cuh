@@ -99,4 +99,3 @@ class paracrine {
 		thrust::device_vector<Float> paracrine::initial_guess(thrust::device_vector<Float> grid, thrust::device_vector<Float> laplacian_grid);
 
 };
-
