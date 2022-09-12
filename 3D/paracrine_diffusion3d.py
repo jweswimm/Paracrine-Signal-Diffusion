@@ -1,5 +1,6 @@
 #NOT UP TO DATE
 #NEW ALGORITHMS USED IN PARACRINE SOLVER 
+#SEE CUDA CODE FOR NEWEST ALGORITHMS
 import torch
 import numpy as np
 import torch.nn.functional as F
