@@ -5,9 +5,11 @@ import numpy as np
 import torch.nn.functional as F
 
 torch.__version__
-import os
-os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE" #needed for matplotlib for this computer (duplicate files)
+#Uncomment if using jupyter notebook
 #https://github.com/matplotlib/matplotlib/issues/21513
+#import os
+#os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE" #needed for matplotlib for this computer (duplicate files UMICH computer)
+
 
 #Turn off autograd
 torch.set_grad_enabled(False)
